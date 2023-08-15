@@ -1,0 +1,57 @@
+# Environment Variables
+.env
+.env.local
+
+# OAuth Tokens
+config/yahoo_token.json
+*.token
+
+# SSL Certificates (contain private keys)
+config/localhost.key
+config/localhost.crt
+*.key
+*.crt
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Database
+*.db
+*.sqlite
+*.sql.backup
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude local settings
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Data files
+data/*.csv
+data/*.json
+data/*.xlsx
+
+# Temporary files
+tmp/
+temp/
+*.tmp
