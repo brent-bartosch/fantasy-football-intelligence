@@ -129,9 +129,10 @@ Full table: `docs/superpowers/risks/2026-07-08-draft-intelligence-risks.md`. Hig
 |---|---|---|
 | R2 | Draft-day live-sync meltdown (999 lockout / OAuth expiry / wifi) on the clock | 48 |
 | R3 | Scope overrun → assistant unrehearsed (critical path has ~zero slack) | 48 |
-| R1 | Scoring-engine encoding bug silently poisons the entire board | 40 |
+| R4 | Historical era drift (14–16 team, likely 1QB history) → simulator's QB-timing conclusions systematically wrong | 42 |
+| R1 | Scoring-engine encoding bug silently poisons the entire board (golden tests) | 40 |
+| R16 | Scoring methodology error — distribution model, FD imputation, or 2QB baseline algorithmically wrong despite correct encoding (backtests + calibration + divergence checks) | 40 |
 | R6 | Player-ID crosswalk errors (worst: 2026 rookies) | 36 |
-| R4 | Historical era drift (14–16 team, likely 1QB history) misleads tendency models | 35 |
 | R5 | Sleeper endpoint drift/shutoff (silent drift worst case) | 32 |
 | R7 | Sim-to-reality transfer failure (bots ≠ these 11 humans) | 30 |
 
@@ -161,4 +162,4 @@ Full doc: `docs/superpowers/risks/2026-07-08-draft-intelligence-adr.md`. (1) Fai
 
 ## 14. Current status
 
-Design doc committed. Risk register + ADR written and presented for combined review — **awaiting your `accept` (or edit requests)**, after which: commit both → `superpowers:writing-plans` → implementation plan → build begins with week-1 infrastructure revival.
+Design doc committed. Risk register + ADR reviewed and **accepted with fixes applied** (2026-07-09): R16 methodology-error risk added; R4 impact raised to I6; Domain 1 poll thresholds tightened for the 90-second clock (1 failure → POLL-DEGRADED, 999 → immediate MANUAL); Domain 2 migration path decided (named Postgres schemas; `public` = core layer, crosswalk in `public`); Domain 6 committed to `uv`. Reviewer's nice-to-fixes (agent-latency risk, browser-profile gitignore, sim-log volume policy, scoring purity test, restore test at week 3, ADR preamble) deferred to the implementation plan. Verified codebase-context gaps for the plan to front-load: legacy import created placeholder players (`Player {key}`, TBD pos/team); legacy stat map covers only 11 basic stat IDs (none of the exotic scoring); legacy assistant/adjuster hardcode 14 teams — effectively all v1 analytical code is dead. Next: `superpowers:writing-plans` → implementation plan → week-1 infrastructure revival.
