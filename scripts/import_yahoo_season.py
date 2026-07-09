@@ -71,6 +71,8 @@ def import_weeks(conn, lg, league_key: str, season: int, weeks: list[int]):
             (league_key,),
         )
         ids = [int(r[0].split(".p.")[-1]) for r in cur.fetchall()]
+    if not ids:
+        raise SystemExit(f"no drafted players for {league_key} — run --draft first")
     print(f"{len(ids)} players, weeks {weeks}")
     for week in weeks:
         with conn.cursor() as cur:
@@ -158,6 +160,10 @@ def import_outcomes(conn, lg, league_key: str, season: int):
 
     # Transactions: full log (adds/drops/trades). One-ish call; count=999 requests everything.
     txns = lg.transactions("add,drop,trade", 999)
+    if len(txns) >= 999:
+        raise SystemExit(
+            f"{league_key}: transaction fetch hit the 999 cap — results would be truncated; raise the cap"
+        )
     with conn.cursor() as cur:
         for t in txns:
             cur.execute(

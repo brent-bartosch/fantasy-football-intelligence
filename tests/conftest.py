@@ -11,8 +11,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "scripts"))
 @pytest.fixture()
 def db():
     conn = psycopg2.connect(dbname="fantasy_football_test", host="localhost")
-    mig = pathlib.Path(__file__).parent.parent / "migrations" / "001_foundation.sql"
+    repo_root = pathlib.Path(__file__).parent.parent
+    mig = repo_root / "migrations" / "001_foundation.sql"
     with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('public.players')")
+        if cur.fetchone()[0] is None:
+            create_tables = repo_root / "schema" / "create_tables.sql"
+            cur.execute(create_tables.read_text())
         cur.execute(mig.read_text())
     conn.commit()
     yield conn

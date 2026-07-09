@@ -47,7 +47,7 @@ CHECKS = [
     # re-run) must not fail this gate forever. Any source whose most recent run
     # is not 'success' is a real, current problem and should still fail here.
     (
-        "no failed ingest runs in last 24h (latest run per source)",
+        "every source's latest ingest run succeeded",
         """SELECT count(*) = 0 FROM (
             SELECT DISTINCT ON (source) source, status
             FROM raw.ingest_runs

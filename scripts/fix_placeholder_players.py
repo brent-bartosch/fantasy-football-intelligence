@@ -35,6 +35,7 @@ def main():
         by_league.setdefault(league_id, []).append((player_id, ykey))
 
     fixed, failed = 0, []
+    consecutive_failures = 0
     for league_key, players in by_league.items():
         lg = get_league(session, league_key)
         for i in range(0, len(players), BATCH):
@@ -44,8 +45,14 @@ def main():
                 details = lg.player_details(ids)
             except Exception as exc:  # fail loud per-chunk, keep going, report at end
                 failed.append((league_key, ids, str(exc)))
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    raise SystemExit(
+                        f"aborting: {consecutive_failures} consecutive chunk failures — systemic (auth/999?)"
+                    )
                 time.sleep(2)
                 continue
+            consecutive_failures = 0
             by_id = {str(d["player_id"]): d for d in details}
             with conn.cursor() as cur:
                 for player_id, ykey in chunk:
@@ -78,6 +85,8 @@ def main():
         print("  FAIL:", f)
     if remaining:
         print("Residual placeholders need manual attention — report count to the user.")
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
