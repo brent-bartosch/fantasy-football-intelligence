@@ -226,6 +226,37 @@ CREATE TABLE IF NOT EXISTS raw.yahoo_player_week (
     PRIMARY KEY (league_key, week, yahoo_player_id)
 );
 
+CREATE TABLE IF NOT EXISTS raw.yahoo_standings (
+    league_key   TEXT NOT NULL,
+    team_key     TEXT NOT NULL,
+    season       INTEGER NOT NULL,
+    team_name    TEXT,
+    final_rank   INTEGER,
+    payload      JSONB NOT NULL,     -- full standings entry (W/L, PF/PA, manager info)
+    fetched_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (league_key, team_key)
+);
+
+CREATE TABLE IF NOT EXISTS raw.yahoo_matchups (
+    league_key   TEXT NOT NULL,
+    season       INTEGER NOT NULL,
+    week         INTEGER NOT NULL,
+    payload      JSONB NOT NULL,     -- full scoreboard response; parsed in Phase 2
+    fetched_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (league_key, week)
+);
+
+CREATE TABLE IF NOT EXISTS raw.yahoo_transactions (
+    league_key      TEXT NOT NULL,
+    transaction_key TEXT NOT NULL,
+    season          INTEGER NOT NULL,
+    type            TEXT,             -- add, drop, add/drop, trade, commish
+    ts              TIMESTAMPTZ,
+    payload         JSONB NOT NULL,   -- full transaction incl players, teams, waiver detail
+    fetched_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (league_key, transaction_key)
+);
+
 CREATE TABLE IF NOT EXISTS public.player_id_xwalk (
     xwalk_id        SERIAL PRIMARY KEY,
     name            TEXT NOT NULL,
@@ -1314,8 +1345,8 @@ git commit -m "feat: backfill placeholder player names/positions from Yahoo per-
 - Create: `scripts/import_yahoo_season.py`
 
 **Interfaces:**
-- Consumes: `get_session`, `get_league`; `raw.yahoo_player_week` (Task 2); `public.draft_picks` / `players` / `leagues` / `teams` (legacy schema).
-- Produces: 2025 draft picks in `public.draft_picks` (the legacy import ran pre-draft and has 0 picks for 2025); weekly per-player stat lines in `raw.yahoo_player_week` for any requested season. CLI: `uv run python scripts/import_yahoo_season.py --league-key 461.l.863132 --draft --weeks 1-17`.
+- Consumes: `get_session`, `get_league`; `raw.yahoo_player_week`, `raw.yahoo_standings`, `raw.yahoo_matchups`, `raw.yahoo_transactions` (Task 2); `public.draft_picks` / `players` / `leagues` / `teams` (legacy schema).
+- Produces: draft picks in `public.draft_picks`; weekly per-player stat lines in `raw.yahoo_player_week`; season outcomes (final standings, weekly team scoreboards, full transaction log) in the three `raw.yahoo_*` outcome tables — the season time-series that connects "what left the draft" to "what finished the year". CLI: `uv run python scripts/import_yahoo_season.py --league-key 461.l.326814 --draft --outcomes --weeks 1-17`.
 
 **Context:** `lg.draft_results()` returns a list of dicts with `pick`, `round`, `team_key`, `player_id` (skip entries without `player_id` — mid/failed drafts). `lg.player_stats(ids, 'week', week=N)` returns per-player dicts of stat name → value including `'total_points'`. Which league key to run for 2025 depends on **Task 7's audit outcome** (NAJEE `461.l.326814` vs LMU `461.l.863132`) — run for the league(s) the user confirms. Player id set per season = drafted players of that league (good-enough coverage for draft-outcome analysis; waiver pickups come in Phase 2 if needed via transactions).
 
@@ -1407,11 +1438,66 @@ def import_weeks(conn, lg, league_key: str, season: int, weeks: list[int]):
         print(f"  week {week}: done")
 
 
+def import_outcomes(conn, lg, league_key: str, season: int):
+    """Final standings + weekly team scoreboards + full transaction log (the season time-series)."""
+    # Standings: one call. Parse rank/name minimally; keep the full entry as payload.
+    standings = lg.standings()
+    with conn.cursor() as cur:
+        for i, entry in enumerate(standings):
+            cur.execute(
+                """INSERT INTO raw.yahoo_standings (league_key, team_key, season, team_name, final_rank, payload)
+                   VALUES (%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT (league_key, team_key) DO UPDATE SET payload=EXCLUDED.payload, fetched_at=now()""",
+                (league_key, entry.get("team_key", f"{league_key}.t.{i+1}"), season,
+                 entry.get("name"), int(entry["rank"]) if entry.get("rank") else None,
+                 json.dumps(entry, default=str)),
+            )
+    conn.commit()
+    print(f"  standings: {len(standings)} teams")
+    time.sleep(2)
+
+    # Weekly scoreboards: one call per week; store raw, parse in Phase 2.
+    end_week = int(lg.end_week())
+    for week in range(1, end_week + 1):
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM raw.yahoo_matchups WHERE league_key=%s AND week=%s",
+                        (league_key, week))
+            if cur.fetchone():
+                continue
+        payload = lg.matchups(week=week)
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO raw.yahoo_matchups (league_key, season, week, payload) VALUES (%s,%s,%s,%s)",
+                (league_key, season, week, json.dumps(payload, default=str)),
+            )
+        conn.commit()
+        time.sleep(2)
+    print(f"  matchups: weeks 1-{end_week}")
+
+    # Transactions: full log (adds/drops/trades). One-ish call; count=999 requests everything.
+    txns = lg.transactions("add,drop,trade", 999)
+    with conn.cursor() as cur:
+        for t in txns:
+            cur.execute(
+                """INSERT INTO raw.yahoo_transactions (league_key, transaction_key, season, type, ts, payload)
+                   VALUES (%s,%s,%s,%s, to_timestamp(%s), %s)
+                   ON CONFLICT (league_key, transaction_key) DO NOTHING""",
+                (league_key, t["transaction_key"], season, t.get("type"),
+                 int(t["timestamp"]) if t.get("timestamp") else None,
+                 json.dumps(t, default=str)),
+            )
+    conn.commit()
+    print(f"  transactions: {len(txns)}")
+    time.sleep(2)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--league-key", required=True)
     ap.add_argument("--draft", action="store_true")
-    ap.add_argument("--weeks", default=None, help="e.g. 1-17")
+    ap.add_argument("--outcomes", action="store_true",
+                    help="standings + weekly scoreboards + transactions")
+    ap.add_argument("--weeks", default=None, help="e.g. 1-17 (per-player stats)")
     args = ap.parse_args()
 
     conn = connect()
@@ -1421,6 +1507,8 @@ def main():
 
     if args.draft:
         import_draft(conn, lg, args.league_key)
+    if args.outcomes:
+        import_outcomes(conn, lg, args.league_key, season)
     if args.weeks:
         lo, hi = args.weeks.split("-") if "-" in args.weeks else (args.weeks, args.weeks)
         import_weeks(conn, lg, args.league_key, season, list(range(int(lo), int(hi) + 1)))
@@ -1438,12 +1526,12 @@ The target league's 16-season history was never imported (Task 7 finding), so th
 for KEY in 461.l.326814 449.l.399828 423.l.740979 414.l.736361 406.l.84455 \
            399.l.112777 390.l.112947 380.l.208647 371.l.22301 359.l.123809 \
            348.l.74399 331.l.34421 314.l.66686 273.l.11224 257.l.31534 242.l.8015; do
-  uv run python scripts/import_yahoo_season.py --league-key "$KEY" --draft || break
+  uv run python scripts/import_yahoo_season.py --league-key "$KEY" --draft --outcomes || break
 done
 uv run python scripts/import_yahoo_season.py --league-key 461.l.326814 --weeks 1-17
 uv run python scripts/fix_placeholder_players.py   # resolve placeholders created by these imports
 ```
-Expected: ~16 × (12 teams × ~16-20 rounds) ≈ 3,000–3,800 NAJEE draft picks landing in `draft_picks`; 17 "week N: done" lines for 2025; then a cleanup pass for the new placeholder players. Weekly-stats range ≈ 110 calls at 2s spacing ≈ 45 min; draft imports are 1–2 calls per season. Resumable per-week and per-season if interrupted.
+Expected: ~16 × (12 teams × ~16-20 rounds) ≈ 3,000–3,800 NAJEE draft picks in `draft_picks`; per season, a standings line (12 teams), a matchups line, and a transactions count; 17 "week N: done" lines for 2025; then a cleanup pass for new placeholder players. Call budget: drafts ~2/season + outcomes ~20/season (standings 1, scoreboards ~17, transactions 1-2) + 2025 player-weeks ~110 ≈ **~460 calls at 2s spacing ≈ 25–30 min total** — run overnight or in one sitting; every piece is resumable/idempotent. This is the full season time-series: draft → every transaction → weekly scores → final standings, for all 16 seasons. (Weekly *lineups* are deliberately NOT pulled — ~3,300 extra calls; roster evolution is reconstructable from draft + transactions, and lineup-level analysis can sample champions later if Phase 2 wants it.)
 
 - [ ] **Step 3: Sanity-check draft→outcome joinability (the phase's payoff)**
 
@@ -1669,6 +1757,10 @@ CHECKS = [
     ("NAJEE chain drafts imported (>=3000 picks across audited seasons)",
      """SELECT count(*) >= 3000 FROM draft_picks dp
         JOIN raw.yahoo_league_settings s ON s.league_key = dp.league_id"""),
+    ("NAJEE season outcomes imported (standings for >=14 seasons)",
+     "SELECT count(DISTINCT league_key) >= 14 FROM raw.yahoo_standings"),
+    ("NAJEE transaction log imported (>=14 seasons)",
+     "SELECT count(DISTINCT league_key) >= 14 FROM raw.yahoo_transactions"),
     ("placeholder players cleaned (<5% remain)",
      """SELECT (count(*) FILTER (WHERE player_name LIKE 'Player %'))::float
         / greatest(count(*),1) < 0.05 FROM players"""),
