@@ -55,3 +55,14 @@ data/*.xlsx
 tmp/
 temp/
 *.tmp
+
+# Browser automation profiles (authenticated session state = secrets)
+browser-profiles/
+.playwright/
+playwright/.auth/
+
+# Yahoo oauth wrapper token file (Task 6)
+config/yahoo_oauth.json
+
+# Database backups
+backups/
