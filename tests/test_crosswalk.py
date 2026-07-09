@@ -21,3 +21,22 @@ def test_match_report_flags_unmatched(db):
     assert report["total_fantasy_players"] == 2
     assert report["matched"] == 1
     assert report["unmatched"] == [("Mystery Man", "RB", "99999")]
+
+
+def test_match_report_excludes_def_and_slug_rows(db):
+    _seed(db)
+    with db.cursor() as cur:
+        cur.execute(
+            """INSERT INTO players (yahoo_player_id, player_name, position, nfl_team)
+                       VALUES ('449.p.100001','Falcons','DEF','ATL'),
+                              ('nfl.p.justin_jefferson','Justin Jefferson','WR','MIN')"""
+        )
+    db.commit()
+    report = match_report(db)
+    # DEF rows and legacy slug-format ids must not inflate the coverage denominator
+    assert report["total_fantasy_players"] == 2
+    assert report["matched"] == 1
+    assert report["unmatched"] == [("Mystery Man", "RB", "99999")]
+    # ...but both are surfaced explicitly
+    assert report["def_rows"] == 1
+    assert report["legacy_slug_rows"] == 1
