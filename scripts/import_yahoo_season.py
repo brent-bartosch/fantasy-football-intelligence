@@ -78,9 +78,18 @@ def import_weeks(conn, lg, league_key: str, season: int, weeks: list[int]):
                 "SELECT count(*) FROM raw.yahoo_player_week WHERE league_key=%s AND week=%s",
                 (league_key, week),
             )
-            if cur.fetchone()[0] > 0:
-                print(f"  week {week}: already imported, skipping")
+            existing = cur.fetchone()[0]
+            # lg.player_stats returns one row per requested id (zeros for inactive
+            # players), so a complete week has exactly len(ids) rows. Per-batch
+            # commits mean a mid-week crash can leave fewer — re-fetch the whole
+            # week loudly; ON CONFLICT DO NOTHING makes the re-fetch self-healing.
+            if existing == len(ids):
+                print(f"  week {week}: already imported (complete), skipping")
                 continue
+            if existing > 0:
+                print(
+                    f"  week {week}: INCOMPLETE ({existing}/{len(ids)}) — re-fetching"
+                )
         for i in range(0, len(ids), BATCH):
             stats = lg.player_stats(ids[i : i + BATCH], "week", week=week)
             with conn.cursor() as cur:
