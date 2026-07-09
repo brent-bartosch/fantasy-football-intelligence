@@ -160,6 +160,14 @@ Full doc: `docs/superpowers/risks/2026-07-08-draft-intelligence-adr.md`. (1) Fai
 **Pending verification (owned by the build, tracked in design §7):**
 - Yahoo live-poll lag (measure in Level 2 rehearsal); Sleeper endpoint stability; FP key approval timing; 2026 league settings re-verification at renewal; sourcing 2023–25 preseason projection/ADP archives for backtests; when the league adopted 2QB (era segmentation).
 
+## 13a. Addendum (2026-07-09): league identity RESOLVED by live probe
+
+Pre-execution API probe (Yahoo token refreshed successfully; Sleeper alive with first-down projections) settled the identity question:
+
+- **The target NAJEE league and the imported "LMU Still Undefeated" league are two different, simultaneously active leagues.** LMU 2025 (`461.l.863132`) is 14 teams; NAJEE 2025 (`461.l.326814`) is 12 teams.
+- **The NAJEE league renames itself every season and has its own 16-year renew chain (2010–2025, always 12 teams):** NAJEE 'LEFT EYE' HARRIS ← SPEED RASHEE ← DARKNESS RETREAT ← RIDLEY'S LOCKS ← DESHAUN'S MASSEUSE ← KRAFT SERVICES (×2) ← ZAY JONES' HOTEL ROOM ← ZEKE'S PARADE ← Peyton's Grundle Gravy ← GENO'S JAW ← Rice's Elevator Rides ← HERNANDEZ KILLED A GUY ← SARAH JONES HIGH SCHOOL ← ROCK OUT WITH YOUR LOCK OUT ← BEN RAPETHLISBERGER (2010). (The old IMPORT_SUMMARY misread these annual names as separate leagues.)
+- **Consequence:** the 3,782 imported picks describe the LMU league, not the target. The correct history — the NAJEE chain — was never imported. Phase 1 Task 9 now imports all 16 NAJEE drafts (cheap: 1–2 API calls/season); LMU data is retained but demoted to secondary reference. Neither 2026 league exists yet (`renewed=''`), so 2026 settings verification (R8) waits for renewal.
+
 ## 14. Current status
 
 Design doc committed. Risk register + ADR reviewed and **accepted with fixes applied** (2026-07-09): R16 methodology-error risk added; R4 impact raised to I6; Domain 1 poll thresholds tightened for the 90-second clock (1 failure → POLL-DEGRADED, 999 → immediate MANUAL); Domain 2 migration path decided (named Postgres schemas; `public` = core layer, crosswalk in `public`); Domain 6 committed to `uv`. Reviewer's nice-to-fixes (agent-latency risk, browser-profile gitignore, sim-log volume policy, scoring purity test, restore test at week 3, ADR preamble) deferred to the implementation plan. Verified codebase-context gaps for the plan to front-load: legacy import created placeholder players (`Player {key}`, TBD pos/team); legacy stat map covers only 11 basic stat IDs (none of the exotic scoring); legacy assistant/adjuster hardcode 14 teams — effectively all v1 analytical code is dead. Next: `superpowers:writing-plans` → implementation plan → week-1 infrastructure revival.

@@ -954,9 +954,13 @@ git commit -m "feat: Yahoo session adapter over yahoo_oauth/yahoo_fantasy_api wi
 - Consumes: `get_session`, `get_league` (Task 6); `raw.yahoo_league_settings` (Task 2).
 - Produces: populated `raw.yahoo_league_settings` for every season in the target league's renew chain; a printed audit report; function `walk_renew_chain(session, start_key: str) -> list[dict]` and `parse_settings(league_key: str, settings: dict) -> dict` (keys: `league_key, season, league_name, num_teams, renew, renewed, qb_slots, roster_positions`).
 
-**Why critical (risks R4, R9):** Two open identity questions gate everything downstream:
-1. The 2025 rules doc is for league id `326814` (NAJEE), but the legacy import used `461.l.863132` (LMU) for 2025 — **different leagues**. Walk the NAJEE chain backward and compare against the legacy `LMU_LEAGUES` keys (listed in `scripts/import_all_lmu.py:19-37`). If the chains diverge, the imported 17-year history may not describe the target league — STOP and report to the user with both chains before any tendency mining.
-2. Per-season `qb_slots` answers "when did this league become 2QB" — the era-segmentation input for opponent modeling.
+**Why critical (risks R4, R9):** Two identity questions gate everything downstream:
+1. **RESOLVED by live probe 2026-07-09 (pre-execution):** NAJEE (`461.l.326814`) and LMU (`461.l.863132`) are confirmed different leagues, both active in 2025. The NAJEE renew chain runs **16 seasons, 2010–2025, always 12 teams, renamed annually** (SPEED RASHEE 2024, DARKNESS RETREAT 2023, … BEN RAPETHLISBERGER 2010) with **zero overlap** with the legacy-imported LMU chain. The target league's own history was never imported. The audit's zero-overlap warning is therefore *expected* — do not stop for it; the user has been informed. The audit still runs in full to persist per-season settings, managers, and the 2QB era boundary for the NAJEE chain.
+2. Per-season `qb_slots` answers "when did this league become 2QB" — the era-segmentation input for opponent modeling (R4).
+3. Manager GUID continuity across the NAJEE chain verifies the "same core managers" premise and locates the user's "Sports" GUID (R9).
+
+NAJEE chain keys (from the probe; the audit re-derives and persists them):
+`461.l.326814` 2025, `449.l.399828` 2024, `423.l.740979` 2023, `414.l.736361` 2022, `406.l.84455` 2021, `399.l.112777` 2020, `390.l.112947` 2019, `380.l.208647` 2018, `371.l.22301` 2017, `359.l.123809` 2016, `348.l.74399` 2015, `331.l.34421` 2014, `314.l.66686` 2013, `273.l.11224` 2012, `257.l.31534` 2011, `242.l.8015` 2010.
 
 - [ ] **Step 1: Write failing tests for the pure parsing logic**
 
@@ -1340,7 +1344,14 @@ def import_draft(conn, lg, league_key: str):
         if cur.fetchone()[0] > 0:
             print(f"draft_picks already present for {league_key}; skipping (idempotent)")
             return
-        num_teams = lg.settings()["num_teams"]
+        s = lg.settings()
+        num_teams = s["num_teams"]
+        # draft_picks.league_id has an FK to leagues — upsert the league row first
+        cur.execute(
+            """INSERT INTO leagues (league_id, league_name, season_year, num_teams)
+               VALUES (%s,%s,%s,%s) ON CONFLICT (league_id) DO NOTHING""",
+            (league_key, s["name"], int(s["season"]), int(num_teams)),
+        )
         for p in picks:
             player_key = f"{league_key.split('.l.')[0]}.p.{p['player_id']}"
             cur.execute(
@@ -1419,13 +1430,20 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: Run for the 2025 target league (key per Task 7 outcome)**
+- [ ] **Step 2: Import the FULL NAJEE chain's drafts + 2025 weekly stats**
+
+The target league's 16-season history was never imported (Task 7 finding), so the draft import runs for the whole chain; weekly stats run for 2025 only in this phase (older seasons deferred — quota discipline, R15):
 
 ```bash
-uv run python scripts/import_yahoo_season.py --league-key <2025_KEY_FROM_AUDIT> --draft --weeks 1-17
-uv run python scripts/fix_placeholder_players.py   # resolve any new placeholder players
+for KEY in 461.l.326814 449.l.399828 423.l.740979 414.l.736361 406.l.84455 \
+           399.l.112777 390.l.112947 380.l.208647 371.l.22301 359.l.123809 \
+           348.l.74399 331.l.34421 314.l.66686 273.l.11224 257.l.31534 242.l.8015; do
+  uv run python scripts/import_yahoo_season.py --league-key "$KEY" --draft || break
+done
+uv run python scripts/import_yahoo_season.py --league-key 461.l.326814 --weeks 1-17
+uv run python scripts/fix_placeholder_players.py   # resolve placeholders created by these imports
 ```
-Expected: draft pick count matching a 12-team × ~20-round draft (~240) or 14-team equivalent; 17 "week N: done" lines. ~110 calls/week-range at 2s spacing ≈ 45 min — run it and let it finish; it's resumable per-week if interrupted.
+Expected: ~16 × (12 teams × ~16-20 rounds) ≈ 3,000–3,800 NAJEE draft picks landing in `draft_picks`; 17 "week N: done" lines for 2025; then a cleanup pass for the new placeholder players. Weekly-stats range ≈ 110 calls at 2s spacing ≈ 45 min; draft imports are 1–2 calls per season. Resumable per-week and per-season if interrupted.
 
 - [ ] **Step 3: Sanity-check draft→outcome joinability (the phase's payoff)**
 
@@ -1646,8 +1664,11 @@ git commit -m "docs: FantasyPros API key application runbook and call-budget pol
 from ffi.db import connect
 
 CHECKS = [
-    ("17y draft history intact",
+    ("legacy LMU draft history intact",
      "SELECT count(*) >= 3700 FROM draft_picks"),
+    ("NAJEE chain drafts imported (>=3000 picks across audited seasons)",
+     """SELECT count(*) >= 3000 FROM draft_picks dp
+        JOIN raw.yahoo_league_settings s ON s.league_key = dp.league_id"""),
     ("placeholder players cleaned (<5% remain)",
      """SELECT (count(*) FILTER (WHERE player_name LIKE 'Player %'))::float
         / greatest(count(*),1) < 0.05 FROM players"""),
@@ -1703,4 +1724,5 @@ git commit -m "feat: phase 1 exit-criteria report"
 
 - **Spec coverage (Phase-1 scope):** Postgres revival + backup (Task 2), data-quality audit incl. placeholder cleanup (Tasks 7, 8, 12), renew-chain/settings/2QB audit (Task 7), 2025 season + weekly stats (Task 9), Sleeper (Task 4), nflverse (Task 5), crosswalk (Task 10), FP key application (Task 11), fail-loud ingestion + run records (Task 3), gitignore browser profiles (Task 1). Full Yahoo *stat-modifier* mapping and golden-test fixtures are **Phase 2** (scoring engine) — `raw.yahoo_league_settings.settings_payload` already captures each season's stat modifiers wholesale, so nothing is lost.
 - **Known live-API risk:** exact response shapes for `lg.settings()`, `player_details()`, `player_stats()`, and Sleeper season-level projections may differ in detail; every parser fails loud with the raw payload rather than adapting silently, and steps say what to report back.
-- **Historical weekly stats for pre-2025 seasons** are deliberately deferred (Task 9 supports them via `--league-key`, but the bulk 16-season crawl is a Phase 2/3 decision after the Task 7 audit tells us which chain and which eras matter — avoids burning Yahoo quota on possibly-wrong leagues, R15/R9).
+- **Historical weekly stats for pre-2025 seasons** are deliberately deferred (Task 9 imports the full NAJEE chain's *drafts* — cheap, 1–2 calls/season — but the 16-season *weekly-stats* crawl is a Phase 2/3 decision once era boundaries are known; R15).
+- **League-identity resolution (2026-07-09 probe):** the NAJEE chain (16 seasons, 2010–2025, 12 teams, renamed annually) is the target league's true history and drives Tasks 7/9; the legacy LMU import (14-team league) remains in `public` untouched, demoted to secondary reference. Task 12's "17y draft history intact" check now reads as LMU baseline + NAJEE chain imported (≥3,000 NAJEE picks expected).
