@@ -1,0 +1,9 @@
+[
+  {"player_id": "4881", "company": "rotowire", "season": "2025", "week": "5",
+   "stats": {"pass_att": 34.2, "pass_cmp": 22.9, "pass_fd": 11.8, "pass_yd": 259.0,
+              "pass_td": 1.8, "pass_int": 0.7, "rush_att": 6.1, "rush_yd": 38.0,
+              "rush_fd": 2.2, "pts_ppr": 21.4}},
+  {"player_id": "9509", "company": "rotowire", "season": "2025", "week": "5",
+   "stats": {"rush_att": 17.5, "rush_yd": 82.0, "rush_fd": 4.6, "rush_td": 0.6,
+              "rec": 3.4, "rec_tgt": 4.3, "rec_yd": 24.0, "rec_fd": 1.2, "pts_ppr": 16.9}}
+]
