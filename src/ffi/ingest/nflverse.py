@@ -104,7 +104,8 @@ class NflversePlayerWeekIngester(BaseIngester):
         "sack_fumbles_lost",
     ]
 
-    def store(self, conn, run_id: int, df: pl.DataFrame) -> None:
+    def _derive_rows(self, df: pl.DataFrame) -> list[tuple]:
+        """Pure row derivation: null-id guard, fumbles_lost total, insert order."""
         # nflverse includes a few team-level artifact rows with null player_id.
         # Drop them only if provably empty (all stat columns zero/null);
         # otherwise fail loud — real stats without a player id means bad data.
@@ -155,7 +156,10 @@ class NflversePlayerWeekIngester(BaseIngester):
             "kickoff_return_yards",
             "fumbles_lost",
         ]
-        rows = df.select(ordered_src).rows()
+        return df.select(ordered_src).rows()
+
+    def store(self, conn, run_id: int, df: pl.DataFrame) -> None:
+        rows = self._derive_rows(df)
         with conn.cursor() as cur:
             cur.execute(
                 "DELETE FROM raw.nflverse_player_week WHERE season = ANY(%s)",
