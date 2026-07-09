@@ -3,6 +3,10 @@ import psycopg2
 import psycopg2.extras
 import pytest
 
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "scripts"))
+
 
 @pytest.fixture()
 def db():
