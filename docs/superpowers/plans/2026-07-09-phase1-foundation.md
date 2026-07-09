@@ -210,6 +210,7 @@ CREATE TABLE IF NOT EXISTS raw.yahoo_league_settings (
     renewed     TEXT,      -- next season's pointer
     qb_slots    INTEGER,   -- starting QB slots (2QB detection, risk R4)
     roster_positions JSONB,
+    managers    JSONB,     -- {manager_guid: nickname} for the season (R9 continuity)
     settings_payload JSONB NOT NULL,   -- full settings response, untouched
     fetched_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -995,6 +996,15 @@ def test_parse_settings_extracts_qb_slots():
 def test_parse_settings_fails_loud_on_missing_roster():
     with pytest.raises(KeyError):
         parse_settings("461.l.326814", {"name": "x", "season": "2025", "num_teams": 12, "renew": ""})
+
+
+def test_extract_managers_handles_both_yahoo_shapes():
+    from audit_league_history import extract_managers
+    teams = {
+        "461.t.1": {"managers": [{"manager": {"guid": "ABC123", "nickname": "Sports"}}]},
+        "461.t.2": {"managers": {"manager": {"guid": "DEF456", "nickname": "Mike"}}},
+    }
+    assert extract_managers(teams) == {"ABC123": "Sports", "DEF456": "Mike"}
 ```
 
 Note: `sys.path` — add `scripts/` via conftest so the script's functions are importable. Append to `tests/conftest.py`:
@@ -1058,6 +1068,19 @@ def parse_settings(league_key: str, settings: dict) -> dict:
     }
 
 
+def extract_managers(teams: dict) -> dict:
+    """{manager_guid: nickname} from lg.teams(). Handles Yahoo's list-or-dict manager shapes."""
+    out = {}
+    for _, team in teams.items():
+        mgrs = team["managers"]  # KeyError = schema drift = stop (fail loud)
+        if isinstance(mgrs, dict):
+            mgrs = [mgrs]
+        for m in mgrs:
+            mm = m["manager"] if "manager" in m else m
+            out[mm.get("guid") or f"no-guid:{mm.get('manager_id')}"] = mm.get("nickname", "?")
+    return out
+
+
 def walk_renew_chain(session, start_key: str) -> list[dict]:
     from ffi.yahoo_client import get_league
     rows, key = [], start_key
@@ -1066,10 +1089,12 @@ def walk_renew_chain(session, start_key: str) -> list[dict]:
         settings = lg.settings()
         row = parse_settings(key, settings)
         row["settings_payload"] = settings
+        row["managers"] = extract_managers(lg.teams())
         rows.append(row)
-        print(f"  {row['season']}: {row['league_name']!r} teams={row['num_teams']} QB={row['qb_slots']} key={key}")
+        print(f"  {row['season']}: {row['league_name']!r} teams={row['num_teams']} "
+              f"QB={row['qb_slots']} managers={len(row['managers'])} key={key}")
         key = renew_to_league_key(row["renew"])
-        time.sleep(2)  # Yahoo throttle (R15)
+        time.sleep(2)  # Yahoo throttle (R15) — two calls per season (settings + teams)
     return rows
 
 
@@ -1087,14 +1112,15 @@ def main():
             cur.execute(
                 """INSERT INTO raw.yahoo_league_settings
                    (league_key, season, league_name, num_teams, renew, renewed, qb_slots,
-                    roster_positions, settings_payload)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    roster_positions, managers, settings_payload)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (league_key) DO UPDATE SET
                      settings_payload=EXCLUDED.settings_payload, qb_slots=EXCLUDED.qb_slots,
-                     num_teams=EXCLUDED.num_teams, fetched_at=now()""",
+                     num_teams=EXCLUDED.num_teams, managers=EXCLUDED.managers, fetched_at=now()""",
                 (r["league_key"], r["season"], r["league_name"], r["num_teams"],
                  r["renew"], r["renewed"], r["qb_slots"],
-                 json.dumps(r["roster_positions"]), json.dumps(r["settings_payload"])),
+                 json.dumps(r["roster_positions"]), json.dumps(r["managers"]),
+                 json.dumps(r["settings_payload"])),
             )
     conn.commit()
 
@@ -1111,6 +1137,29 @@ def main():
     elif chain_keys != LEGACY_LMU_KEYS:
         print(f"!! PARTIAL overlap. In chain but not imported: {sorted(chain_keys - LEGACY_LMU_KEYS)}")
         print(f"!! Imported but not in chain: {sorted(LEGACY_LMU_KEYS - chain_keys)}")
+
+    # R9: manager-continuity verification — GUIDs are the anchor (nicknames change annually)
+    guid_names, guid_seasons = {}, {}
+    for r in rows:
+        for g, n in r["managers"].items():
+            guid_names[g] = n  # latest nickname wins
+            guid_seasons.setdefault(g, set()).add(r["season"])
+    seasons_all = {r["season"] for r in rows}
+    print("\nManager continuity (R9):")
+    for g, seasons in sorted(guid_seasons.items(), key=lambda kv: -len(kv[1])):
+        missing = sorted(seasons_all - seasons)
+        gap = f", MISSING {missing}" if missing else ""
+        print(f"  {guid_names[g]!r} ({g[:12]}…): {len(seasons)} seasons "
+              f"{min(seasons)}–{max(seasons)}{gap}")
+    sports = [g for g, n in guid_names.items() if n.lower() == "sports"]
+    if sports:
+        for g in sports:
+            print(f"  -> user 'Sports' GUID {g}: seasons {sorted(guid_seasons[g])}")
+    else:
+        print("!! 'Sports' nickname not found in any season — identify the user's GUID manually (R9).")
+    core = sum(1 for s in guid_seasons.values() if len(s) >= 10)
+    print(f"  GUIDs spanning >=10 seasons: {core} "
+          f"(expect ~10 if the 'same core managers' premise holds; 0 means GUIDs broke — STOP, R9)")
 
 
 if __name__ == "__main__":
