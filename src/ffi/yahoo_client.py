@@ -1,7 +1,6 @@
 import json
 import os
 import pathlib
-import time
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -29,19 +28,23 @@ def _build_oauth_file() -> None:
             f"{LEGACY_TOKEN} has keys {sorted(legacy.keys())} — expected 'refresh_token'. "
             "Re-authorize with scripts/yahoo_manual_auth.py."
         )
-    OAUTH_FILE.write_text(
-        json.dumps(
-            {
-                "consumer_key": consumer_key,
-                "consumer_secret": consumer_secret,
-                "access_token": legacy.get("access_token", ""),
-                "refresh_token": legacy["refresh_token"],
-                "token_type": legacy.get("token_type", "bearer"),
-                "token_time": 0.0,  # force immediate refresh on first use
-            }
-        )
+    payload = json.dumps(
+        {
+            "consumer_key": consumer_key,
+            "consumer_secret": consumer_secret,
+            "access_token": legacy.get("access_token", ""),
+            "refresh_token": legacy["refresh_token"],
+            "token_type": legacy.get("token_type", "bearer"),
+            "token_time": 0.0,  # force immediate refresh on first use
+        }
     )
-    OAUTH_FILE.chmod(0o600)
+    # Create with 0600 from the start (no world-readable window), then
+    # atomically move into place.
+    tmp = OAUTH_FILE.with_suffix(".json.tmp")
+    fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(payload)
+    os.replace(tmp, OAUTH_FILE)
 
 
 def get_session():
