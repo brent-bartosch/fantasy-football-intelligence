@@ -69,6 +69,10 @@ def extract_managers(teams: dict) -> dict:
     missing guid) never fires and all teams collapse onto one dict key. We now treat
     "--hidden--" the same as a missing guid and fall back to the per-league
     manager_id (stable 1-12 across all 16 renewed seasons in the observed chain).
+
+    CAVEAT: manager_id is a per-season team-slot number, NOT a person identity —
+    if a human leaves and a replacement inherits the slot, this merges two people
+    silently; slot turnover must be annotated by the league's human (Phase 2).
     """
     out = {}
     for _, team in teams.items():
@@ -103,15 +107,38 @@ def positions_to_roster_positions(positions: dict) -> list[dict]:
     ]
 
 
+def resolve_display_names(rows: list[dict]) -> dict[str, str]:
+    """{guid: display_nickname} across the chain. Rows arrive newest-season-first
+    (the chain descends via the renew pointer), so first-seen = newest.
+
+    Rules (Yahoo hides nicknames as literal "--hidden--" for seasons older than
+    ~5 years — 2010-2020 observed hidden, 2021-2025 observed visible):
+    - the FIRST non-hidden nickname seen wins (i.e. the most recent one);
+    - a hidden nickname never overwrites anything;
+    - a guid only ever seen as hidden keeps "--hidden--".
+    """
+    names: dict[str, str] = {}
+    for r in rows:
+        for g, n in r["managers"].items():
+            if n != "--hidden--" and names.get(g, "--hidden--") == "--hidden--":
+                names[g] = n  # first non-hidden seen (= newest) wins
+            elif g not in names:
+                names[g] = "--hidden--"
+    return names
+
+
 def walk_renew_chain(session, start_key: str) -> list[dict]:
     from ffi.yahoo_client import get_league
 
     rows, key = [], start_key
     while key:
         lg = get_league(session, key)
-        settings = dict(lg.settings())
-        settings["roster_positions"] = positions_to_roster_positions(lg.positions())
-        row = parse_settings(key, settings)
+        settings = lg.settings()  # pristine — persisted untouched as settings_payload
+        # parse_settings needs roster_positions, which lg.settings() strips (see
+        # positions_to_roster_positions docstring) — merge into a WORKING COPY only.
+        working = dict(settings)
+        working["roster_positions"] = positions_to_roster_positions(lg.positions())
+        row = parse_settings(key, working)
         row["settings_payload"] = settings
         row["managers"] = extract_managers(lg.teams())
         rows.append(row)
@@ -120,7 +147,9 @@ def walk_renew_chain(session, start_key: str) -> list[dict]:
             f"QB={row['qb_slots']} managers={len(row['managers'])} key={key}"
         )
         key = renew_to_league_key(row["renew"])
-        time.sleep(2)  # Yahoo throttle (R15) — two calls per season (settings + teams)
+        time.sleep(
+            2
+        )  # Yahoo throttle (R15) — three calls per season (settings + positions + teams)
     return rows
 
 
@@ -182,22 +211,14 @@ def main():
         )
         print(f"!! Imported but not in chain: {sorted(LEGACY_LMU_KEYS - chain_keys)}")
 
-    # R9: manager-continuity verification — GUIDs are the anchor (nicknames change annually)
-    #
-    # DEVIATION: rows are walked newest-season-first (chain descends from the renew
-    # pointer), so a naive "last processed wins" would let the OLDEST season's
-    # nickname clobber the display name. That matters because Yahoo also hides
-    # nicknames (literal "--hidden--") for seasons older than ~5 years in this
-    # chain (2010-2020 observed hidden; 2021-2025 observed visible). We keep the
-    # first real (non-hidden) nickname seen — i.e. the most recent one — and only
-    # fall back to "--hidden--" if no season ever exposed a real nickname for that
-    # manager slot.
-    guid_names, guid_seasons = {}, {}
+    # R9: manager-continuity verification — GUIDs are the anchor (nicknames change annually).
+    # Display names resolved by resolve_display_names (pure, unit-tested): newest
+    # non-hidden nickname wins; see its docstring for the Yahoo hidden-nickname rules.
+    guid_names = resolve_display_names(rows)
+    guid_seasons: dict[str, set] = {}
     for r in rows:
-        for g, n in r["managers"].items():
+        for g in r["managers"]:
             guid_seasons.setdefault(g, set()).add(r["season"])
-            if n != "--hidden--" or g not in guid_names:
-                guid_names[g] = n
     seasons_all = {r["season"] for r in rows}
     print("\nManager continuity (R9):")
     for g, seasons in sorted(guid_seasons.items(), key=lambda kv: -len(kv[1])):
@@ -216,9 +237,15 @@ def main():
             "!! 'Sports' nickname not found in any season — identify the user's GUID manually (R9)."
         )
     core = sum(1 for s in guid_seasons.values() if len(s) >= 10)
+    n_seasons = len(seasons_all)
+    full = sum(1 for s in guid_seasons.values() if s == seasons_all)
     print(
-        f"  GUIDs spanning >=10 seasons: {core} "
-        f"(expect ~10 if the 'same core managers' premise holds; 0 means GUIDs broke — STOP, R9)"
+        f"  Slots spanning >=10 seasons: {core} (0 means identity anchors broke — STOP, R9)"
+    )
+    print(
+        f"  {full}/{len(guid_seasons)} team slots present in all {n_seasons} seasons "
+        f"(slot continuity — human turnover within a slot is NOT detectable from API "
+        f"data; known example: current user inherited their slot ~2022)."
     )
 
 

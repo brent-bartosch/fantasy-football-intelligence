@@ -84,3 +84,63 @@ def test_extract_managers_treats_hidden_sentinel_as_no_guid():
     assert len(result) == 2
     assert result["no-guid:7"] == "Solis"
     assert result["no-guid:12"] == "Brent"
+
+
+def test_resolve_display_names_newest_nickname_wins():
+    # Rows arrive newest-season-first; first non-hidden seen must win.
+    from audit_league_history import resolve_display_names
+
+    rows = [
+        {"season": 2025, "managers": {"no-guid:5": "NewName"}},
+        {"season": 2021, "managers": {"no-guid:5": "OldName"}},
+    ]
+    assert resolve_display_names(rows) == {"no-guid:5": "NewName"}
+
+
+def test_resolve_display_names_hidden_never_overwrites_and_hidden_only_stays():
+    from audit_league_history import resolve_display_names
+
+    rows = [
+        # newest first: visible in 2025, hidden in older seasons
+        {"season": 2025, "managers": {"no-guid:1": "Zac", "no-guid:2": "--hidden--"}},
+        {
+            "season": 2015,
+            "managers": {"no-guid:1": "--hidden--", "no-guid:2": "--hidden--"},
+        },
+    ]
+    result = resolve_display_names(rows)
+    assert result["no-guid:1"] == "Zac"  # hidden must not overwrite
+    assert result["no-guid:2"] == "--hidden--"  # never visible -> stays hidden
+
+
+def test_resolve_display_names_hidden_first_then_visible_resolves_visible():
+    # A guid first seen hidden (e.g. newest season redacted) must still pick up
+    # a later-seen real nickname.
+    from audit_league_history import resolve_display_names
+
+    rows = [
+        {"season": 2025, "managers": {"no-guid:3": "--hidden--"}},
+        {"season": 2024, "managers": {"no-guid:3": "Greg"}},
+    ]
+    assert resolve_display_names(rows) == {"no-guid:3": "Greg"}
+
+
+def test_positions_to_roster_positions_converts_dict_to_wrapped_list():
+    from audit_league_history import positions_to_roster_positions
+
+    positions = {
+        "QB": {"position_type": "O", "count": 2, "is_starting_position": 1},
+        "BN": {"count": 8, "is_starting_position": 0},
+    }
+    result = positions_to_roster_positions(positions)
+    assert result == [
+        {
+            "roster_position": {
+                "position": "QB",
+                "position_type": "O",
+                "count": 2,
+                "is_starting_position": 1,
+            }
+        },
+        {"roster_position": {"position": "BN", "count": 8, "is_starting_position": 0}},
+    ]
