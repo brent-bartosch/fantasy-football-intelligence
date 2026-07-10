@@ -21,18 +21,22 @@ def test_validate_passes_on_good_payload():
     assert ing.validate(FIXTURE) == 2
 
 
-def test_validate_fails_when_first_downs_missing():
+def test_validate_warns_but_passes_when_first_downs_missing():
+    # FD (*_fd) is diagnostic only (post-R16 amendment): native FD is not
+    # consumed by scoring, so missing FD coverage should warn, not block.
     broken = json.loads(json.dumps(FIXTURE))
     for rec in broken:
         rec["stats"].pop("pass_fd", None)
         rec["stats"].pop("rush_fd", None)
         rec["stats"].pop("rec_fd", None)
     ing = FixtureIngester(season=2025, week=5)
-    with pytest.raises(IngestError, match="FD drift"):
-        ing.validate(broken)
+    assert ing.validate(broken) == 2
 
 
-def test_validate_fails_when_all_qbs_lack_pass_fd():
+def test_validate_fails_when_all_qbs_lack_pass_cmp():
+    # pass_cmp (completions) is QB's load-bearing volume key: it's directly
+    # scored (pass_completions weight) and feeds FD imputation. pass_att is
+    # deliberately NOT guarded — it's unscored/unused (see class docstring).
     payload = [
         {
             "player_id": "1",
@@ -46,7 +50,7 @@ def test_validate_fails_when_all_qbs_lack_pass_fd():
         },
     ]
     ing = FixtureIngester(season=2025, week=None)
-    with pytest.raises(IngestError, match="pass_fd"):
+    with pytest.raises(IngestError, match="pass_cmp"):
         ing.validate(payload)
 
 

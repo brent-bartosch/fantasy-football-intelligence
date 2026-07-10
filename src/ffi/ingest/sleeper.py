@@ -1,21 +1,76 @@
 import json
 
 import requests
+import structlog
 
 from ffi.ingest.base import BaseIngester, IngestError
+
+log = structlog.get_logger()
 
 POSITIONS = ["QB", "RB", "WR", "TE", "K", "DEF"]
 BASE_URL = "https://api.sleeper.app/projections/nfl"
 
 
 class SleeperProjectionsIngester(BaseIngester):
+    """Ingests Sleeper season/week projections.
+
+    Native Sleeper first-down projections (pass_fd/rush_fd/rec_fd) were
+    rejected as a scoring input on 2026-07-09: verified ~2x inflated against
+    nflverse 2019-2025 ground truth (see ffi.scoring.fd_impute and
+    docs/research/2026-07-09-fd-imputation-divergence.md). ALL projection
+    scoring now uses FD imputed from nflverse-fitted rates
+    (ffi.scoring.fd_impute.impute_fd); native *_fd fields are not consumed
+    anywhere downstream. Their presence is therefore only monitored (a
+    structlog warning on low coverage), never a hard validation gate — see
+    _VOLUME_BY_POSITION below for the fields that actually are load-bearing.
+    """
+
     source = "sleeper_projections"
 
-    # The project's core edge depends on first downs being projected. Fail
-    # loud per-position rather than on the payload-wide union: a position
-    # whose FD field silently vanishes should trip even if other positions'
-    # FD fields are still present (carry-forward from Phase 1's union check).
+    # The project's core edge depends on per-position volume being
+    # projected: these feed both FD imputation (fit_fd_rates/impute_fd take
+    # carries/receptions/completions) and the scoring weights themselves
+    # (e.g. pass_completions is directly weighted in config/scoring/v1.json).
+    # Fail loud per-position rather than on the payload-wide union: a
+    # position whose volume field silently vanishes should trip even if
+    # other positions' fields are still present (carry-forward from Phase
+    # 1's union check).
+    #
+    # QB uses pass_cmp (completions), not pass_att: pass_att is explicitly
+    # unscored/ignored in ffi.scoring.sleeper_adapter ("not individually
+    # scored (cmp/inc are)") and is not consumed by FD imputation either —
+    # it is not load-bearing, so it would be the wrong field to guard.
+    _VOLUME_BY_POSITION = {"QB": "pass_cmp", "RB": "rush_att", "WR": "rec", "TE": "rec"}
+
+    # Diagnostic only (unconsumed by scoring — see class docstring): coverage
+    # is logged, never blocks ingestion.
     _FD_BY_POSITION = {"QB": "pass_fd", "RB": "rush_fd", "WR": "rec_fd", "TE": "rec_fd"}
+
+    # Live-verified 2026-07-09: at every position, most player_id records
+    # tagged with a scored position carry ONLY ADP/metadata keys (adp_*,
+    # pos_adp_*, pts_*, gp, cmp_pct) and no per-play stat projection at all —
+    # inactive/deep-bench players Sleeper lists but doesn't project (e.g. QB:
+    # 279/355 such records; RB 536/674; WR 1152/1364; TE 513/640). These are
+    # not schema drift and never score any points; counting them in the
+    # per-position denominator makes the <50% guard trip on every position on
+    # every normal payload (verified: it would newly break RB/WR/TE, which
+    # passed under the pre-amendment FD-only check). The denominator is
+    # therefore restricted to records with at least one non-metadata stat key
+    # ("meaningfully projected" players) — the guard still fires if a
+    # load-bearing volume key vanishes among players Sleeper is actually
+    # projecting.
+    _METADATA_PREFIXES = ("adp_", "pos_adp_", "pts_")
+    _METADATA_EXACT = {"gp", "cmp_pct"}
+
+    @classmethod
+    def _is_meaningfully_projected(cls, stats: dict) -> bool:
+        for key in stats:
+            if key in cls._METADATA_EXACT:
+                continue
+            if any(key.startswith(p) for p in cls._METADATA_PREFIXES):
+                continue
+            return True
+        return False
 
     def __init__(self, season: int, week: int | None):
         self.season = season
@@ -35,22 +90,30 @@ class SleeperProjectionsIngester(BaseIngester):
             raise IngestError(
                 f"sleeper: empty or non-list payload: {str(payload)[:200]}"
             )
-        counts = {pos: [0, 0] for pos in self._FD_BY_POSITION}  # [with_fd, total]
+        # [with_volume, with_fd, total] per position.
+        counts = {pos: [0, 0, 0] for pos in self._VOLUME_BY_POSITION}
         for rec in payload:
             if "stats" not in rec or "player_id" not in rec:
                 raise IngestError(
                     f"sleeper: record missing 'stats'/'player_id' — schema drift? record: {json.dumps(rec)[:300]}"
                 )
             pos = (rec.get("player") or {}).get("position")
-            if pos in counts:
-                counts[pos][1] += 1
-                if self._FD_BY_POSITION[pos] in rec["stats"]:
+            if pos in counts and self._is_meaningfully_projected(rec["stats"]):
+                counts[pos][2] += 1
+                if self._VOLUME_BY_POSITION[pos] in rec["stats"]:
                     counts[pos][0] += 1
-        for pos, (with_fd, total) in counts.items():
-            if total and with_fd / total < 0.5:
+                if self._FD_BY_POSITION[pos] in rec["stats"]:
+                    counts[pos][1] += 1
+        for pos, (with_volume, with_fd, total) in counts.items():
+            if total and with_volume / total < 0.5:
                 raise IngestError(
-                    f"sleeper: {self._FD_BY_POSITION[pos]} present in only {with_fd}/{total} "
-                    f"{pos} records — partial FD drift breaks FD pricing (design 4.2/R5)."
+                    f"sleeper: {self._VOLUME_BY_POSITION[pos]} present in only "
+                    f"{with_volume}/{total} {pos} records — partial volume drift breaks "
+                    f"FD imputation and scoring (design 4.2/R5, post-R16 amendment)."
+                )
+            if total and with_fd / total < 0.5:
+                log.warning(
+                    "sleeper.fd_coverage", position=pos, with_fd=with_fd, total=total
                 )
         return len(payload)
 
