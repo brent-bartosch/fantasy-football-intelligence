@@ -637,7 +637,13 @@ def test_render_report_no_batches_for_date_raises():
     pass
 
 
-def test_render_report_exits_nonzero_when_batch_degraded(db):
+def test_render_report_exits_nonzero_when_batch_degraded(db, tmp_path, monkeypatch):
+    # `main_for_date` writes reports/sim-farm-<date>.md to disk. Never let a
+    # test touch the real repo `reports/` dir -- redirect REPORTS_DIR to an
+    # ephemeral tmp_path so this run can't clobber a real generated report
+    # (see Task 12 review finding: tests were overwriting the on-disk
+    # sim-farm-2026-07-10.md with fixture data, e.g. snapshot #42/deadbeef).
+    monkeypatch.setattr(sim_report, "REPORTS_DIR", tmp_path)
     _seed_batch(
         db,
         "qb_hoard_12",
@@ -652,7 +658,10 @@ def test_render_report_exits_nonzero_when_batch_degraded(db):
         sim_report.main_for_date(db, datetime.date(2026, 7, 10))
 
 
-def test_render_report_exits_zero_when_no_batch_degraded(db):
+def test_render_report_exits_zero_when_no_batch_degraded(db, tmp_path, monkeypatch):
+    # See comment in test_render_report_exits_nonzero_when_batch_degraded above:
+    # redirect REPORTS_DIR so this test can't overwrite the real report file.
+    monkeypatch.setattr(sim_report, "REPORTS_DIR", tmp_path)
     _seed_batch(
         db,
         "qb_hoard_12",
@@ -664,7 +673,8 @@ def test_render_report_exits_zero_when_no_batch_degraded(db):
         degraded=False,
     )
     # Should not raise.
-    sim_report.main_for_date(db, datetime.date(2026, 7, 10))
+    out = sim_report.main_for_date(db, datetime.date(2026, 7, 10))
+    assert out.parent == tmp_path
 
 
 def test_render_report_raises_when_no_batches_for_date(db):

@@ -322,6 +322,9 @@ def run_cell(
     all_play_vals = [pct for _, pct in lightweight]
     mean_pct = statistics.mean(all_play_vals)
     se_pct = statistics.stdev(all_play_vals) / math.sqrt(n) if n > 1 else 0.0
+    # top3_rate ranks by all-play pct (via is_top3/pct_map), not by raw PF as
+    # the original plan doc phrased it -- controller-approved deviation, kept
+    # consistent with all_play_pct's own ranking basis elsewhere in this module.
     top3_rate = statistics.mean(1.0 if f else 0.0 for f in top3_flags)
     qb1_round_mean = statistics.mean(qb1_rounds) if qb1_rounds else None
     def_round_mean = statistics.mean(def1_rounds) if def1_rounds else None

@@ -137,8 +137,10 @@ def _qb_policy_table(batches: list) -> list[str]:
     if not sub:
         lines.append("_(no qb_subgrid cells found for this date)_")
         return lines
-    lines.append("| qb_plan_idx | qb_by_round | scenario | all-play% | +/- CI |")
-    lines.append("|---|---|---|---|---|")
+    lines.append(
+        "| qb_plan_idx | qb_by_round | scenario | all-play% | +/- CI | top3_rate* |"
+    )
+    lines.append("|---|---|---|---|---|---|")
     for b in sorted(
         sub, key=lambda b: (b["strategy"]["qb_plan_idx"], b["strategy"]["scenario"])
     ):
@@ -146,10 +148,17 @@ def _qb_policy_table(batches: list) -> list[str]:
         pct = m.get("all_play_pct")
         se = m.get("all_play_se", 0.0)
         ci = 1.96 * se
+        top3 = m.get("top3_rate")
+        top3_str = _fmt_pct(top3) if top3 is not None else "n/a"
         lines.append(
             f"| {b['strategy']['qb_plan_idx']} | {tuple(b['strategy']['qb_by_round'])} | "
-            f"{b['scenario']} | {_fmt_pct(pct)} | +/- {_fmt_pct(ci)} |"
+            f"{b['scenario']} | {_fmt_pct(pct)} | +/- {_fmt_pct(ci)} | {top3_str} |"
         )
+    lines.append("")
+    lines.append(
+        "_*top3_rate is saturated (observed ~0.994 fleet-wide) -- see evaluator "
+        "caveat above; read cross-cell deltas only, not the absolute value._"
+    )
     return lines
 
 
@@ -160,16 +169,29 @@ def _defk_table(batches: list) -> list[str]:
         lines.append("_(no main-grid cells found for this date)_")
         return lines
     by_defk = defaultdict(list)
+    by_defk_top3 = defaultdict(list)
     for b in main:
         by_defk[b["strategy"]["defk_round"]].append(
             b["metrics"].get("all_play_pct", 0.0)
         )
-    lines.append("| defk_round | mean all-play% | n cells |")
-    lines.append("|---|---|---|")
+        by_defk_top3[b["strategy"]["defk_round"]].append(
+            b["metrics"].get("top3_rate", 0.0)
+        )
+    lines.append("| defk_round | mean all-play% | mean top3_rate* | n cells |")
+    lines.append("|---|---|---|---|")
     for defk_round in sorted(by_defk):
         vals = by_defk[defk_round]
         mean = sum(vals) / len(vals)
-        lines.append(f"| {defk_round} | {_fmt_pct(mean)} | {len(vals)} |")
+        top3_vals = by_defk_top3[defk_round]
+        top3_mean = sum(top3_vals) / len(top3_vals)
+        lines.append(
+            f"| {defk_round} | {_fmt_pct(mean)} | {_fmt_pct(top3_mean)} | {len(vals)} |"
+        )
+    lines.append("")
+    lines.append(
+        "_*top3_rate is saturated (observed ~0.994 fleet-wide) -- see evaluator "
+        "caveat above; read cross-cell deltas only, not the absolute value._"
+    )
     return lines
 
 
@@ -301,6 +323,14 @@ def _assumption_audit(conn, sample_drafts: list) -> list[str]:
                 f"- WARN: sim league-wide QB1-round mean {sim_qb1_mean:.2f} vs historical "
                 f"{HISTORICAL_QB1_ROUND} (diff {diff:.2f} > {QB1_TOLERANCE} tolerance)"
             )
+            lines.append(
+                f"  - _Caveat: computed from {len(sample_drafts)} stored sample_drafts "
+                "(the farm's worst/best/random picks per cell, not a uniform draw from "
+                "the night's full run) -- an outcome-biased cross-section, and "
+                "opponents-only (our own seat's QB timing is the experimental knob, "
+                "excluded above). Treat this WARN as directional, not a calibrated "
+                "estimate of the opponent model's true QB1-round distribution._"
+            )
         else:
             lines.append(
                 f"- sim league-wide QB1-round mean {sim_qb1_mean:.2f} vs historical "
@@ -378,7 +408,13 @@ def render_report(conn, date: datetime.date) -> str:
         "(e.g. 0.60+), treat the ABSOLUTE level as an artifact of the MC evaluator, not a "
         "real projected win rate -- the farm's cross-cell COMPARISONS (which qb_plan/"
         "defk_round/tier_break beats which other) are the trustworthy signal here, not "
-        "the levels.",
+        "the levels. **`top3_rate` is saturated for the same reason** (observed ~0.994 "
+        "fleet-wide, i.e. our VORP-argmax seat finishes top-3 of 12 in nearly every "
+        "simulated draft): the same no-bust/no-injury-shock MC variance model that "
+        "inflates all-play% overrewards our seat's roster construction relative to the "
+        "field, so do NOT cite `top3_rate`'s absolute value as a real top-3 probability "
+        "-- only compare it across cells (which qb_plan/defk_round/tier_break has a "
+        "higher or lower top3_rate than another), the same as all-play%.",
         "",
     ]
     lines += _qb_policy_table(batches)
