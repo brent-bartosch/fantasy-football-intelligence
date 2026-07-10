@@ -78,6 +78,20 @@ def build_pool(conn, scenario: str) -> list[PoolPlayer]:
 
     players = []
     for ref, name, position, proj_points, vorp, tier, gsis_id, adp in rows:
+        # Fail-loud guards: NULL ref or NULL tier indicate broken upstream invariants.
+        # ref comes from xwalk.sleeper_id (player_id_xwalk.sleeper_id column).
+        # tier comes from player_value.tier column.
+        if ref is None:
+            raise ValueError(
+                f"NULL sleeper_id (ref) for player {name} ({position}), "
+                f"scenario={scenario} — upstream xwalk join invariant broken"
+            )
+        if tier is None:
+            raise ValueError(
+                f"NULL tier for player {name} ({position}), "
+                f"scenario={scenario} — upstream valuation invariant broken"
+            )
+
         # Defensive: valuation.player_value.position is already normalized
         # ('K' not 'PK' — Task 2), but map it here too in case a raw 'PK'
         # ever leaks through from an upstream source.

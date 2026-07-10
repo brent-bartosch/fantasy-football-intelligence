@@ -147,3 +147,16 @@ def test_pool_rejects_duplicate_refs(db):
     db.commit()
     with pytest.raises(ValueError, match="duplicate"):
         build_pool(db, SCENARIO)
+
+
+def test_pool_fails_loud_on_null_tier(db):
+    """Test fail-loud guard when player_value.tier is NULL.
+    This is the reachable null-check path: the query's inner join on xwalk_id
+    ensures xwalk rows exist, but tier can be NULL in valuation.player_value."""
+    _seed_full_pool(db)
+    # Insert a player with NULL tier by passing tier=None to _insert_value.
+    xid = _insert_xwalk(db, "Null Tier Player", "WR", "null_tier")
+    _insert_value(db, xid, "WR", 100.0, 50.0, tier=None)
+    db.commit()
+    with pytest.raises(ValueError, match="NULL tier.*Null Tier Player.*scenario"):
+        build_pool(db, SCENARIO)
