@@ -28,8 +28,39 @@ def test_validate_fails_when_first_downs_missing():
         rec["stats"].pop("rush_fd", None)
         rec["stats"].pop("rec_fd", None)
     ing = FixtureIngester(season=2025, week=5)
-    with pytest.raises(IngestError, match="first-down"):
+    with pytest.raises(IngestError, match="FD drift"):
         ing.validate(broken)
+
+
+def test_validate_fails_when_all_qbs_lack_pass_fd():
+    payload = [
+        {
+            "player_id": "1",
+            "player": {"position": "QB"},
+            "stats": {"pass_yd": 4000.0, "pass_td": 25.0},
+        },
+        {
+            "player_id": "2",
+            "player": {"position": "QB"},
+            "stats": {"pass_yd": 3800.0, "pass_td": 20.0},
+        },
+    ]
+    ing = FixtureIngester(season=2025, week=None)
+    with pytest.raises(IngestError, match="pass_fd"):
+        ing.validate(payload)
+
+
+def test_validate_passes_when_records_lack_player_position():
+    # No 'player' key, or a 'player' dict without 'position' — not counted
+    # toward any position's FD ratio, so their missing FD fields can't trip
+    # the per-position guard (they're simply excluded from the denominator).
+    payload = [
+        {"player_id": "1", "stats": {"pts_ppr": 5.0}},
+        {"player_id": "2", "player": {}, "stats": {"pts_ppr": 3.0}},
+        {"player_id": "3", "player": {"position": "LS"}, "stats": {"pts_ppr": 0.0}},
+    ]
+    ing = FixtureIngester(season=2025, week=None)
+    assert ing.validate(payload) == 3
 
 
 def test_validate_fails_on_empty_payload():
