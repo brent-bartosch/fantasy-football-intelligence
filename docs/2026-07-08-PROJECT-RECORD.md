@@ -203,3 +203,19 @@ Phase 2 (Scoring Engine, Valuation & Historical Mining) executed subagent-driven
 **Infrastructure live:** morning launchd chain (backup → sleeper ingest → FP sync → score → valuation → briefing), health-first briefing exits nonzero on red; pg_restore drill executed (2.17s, 6/6 counts). Data: draft_picks fully team-attributed (3,720), matchup_results 2,994 team-weeks, crosswalk 97.6% (101 rookie overrides).
 
 **Phase 3 carry-forward:** Sleeper DST tier-semantics task; RequestException→YahooAuthError test; jsonb-canonical compare + RangeTier order validator before any config v2; fixture ORDER BY tiebreaker at regeneration; gmm guard-branch tests; PG_BIN eval alignment next drill. Pending user inputs unchanged: slot-turnover annotation (now higher-value given the franchise-slot finding), QB cohort material (elevated by baseline sensitivity), 2026 draft date, league renewal (R8 re-audit trigger armed).
+
+## 13d. Addendum (2026-07-10): Phase 3 executed and merged
+
+Phase 3 (Monte Carlo Simulator, Opponent Models & Backtests) executed subagent-driven — 14 tasks, per-task review gates (4 Important-finding fix loops), final whole-branch review "READY WITH FIXES" (applied), fast-forward merged to `main` at `3c53d2a`. 307/307 tests; health gate extended to 26/26.
+
+**Simulator stack live (`ffi/sim/`):** pool (2,141 draftable players incl. DEF/K), annotation-aware recency-weighted slot priors, two-stage opponent pick model, seeded 19-round snake draft engine (5.5ms/draft, roster legality property-tested — NOTE: the league drafts 19 rounds, not the design docs' 20), strategy knobs (incl. `qb_not_before`, added by plan amendment after evidence that qb_by_round deadlines never bind under all-QB top VORP), vectorized season evaluator (1.7ms/league).
+
+**R16-class catches this phase:** kicker valuation was silently EMPTY (xwalk 'PK' vs filter 'K'); valuation tables carried 3x stacked snapshot duplicates; Sleeper DST `pts_allow_*` buckets are constant placeholders, not projections (DEF tier points priced via flat fitted uplift 9.66/wk; Spearman 0.572 vs 2025); Rams LA/LAR crosswalk bug; weekly gamma bonus EV LOWERED mean bonus components (one-shot season-total awarding had overpaid marginal players — opposite the expected direction, verified independently).
+
+**Backtests (R11):** archives sourced — superflex ECR all 3 seasons (dynastyprocess); projections real for 2023 + 2025 (no K), 2024 QB-only (Wayback FP); Wayback superflex ADP never archived. Degraded synthetic path used where needed, flagged in provenance. ADR D7 gate ARMED: reference composite 0.5297 ± 0.0196; `run_backtests.py --gate` is now mandatory for any strategy/valuation change.
+
+**Sim farm (ladder Level 0):** 66-cell grid × 200 drafts nightly via `com.ffi.simfarm` (02:30); adversarial report with data-vintage line + assumption audit (which FIRED: sim opponents take QB1 ~2.84 vs the league's historical 1.83 — caveats the QB conclusion); dual-snapshot vintage-mismatch refusal.
+
+**Strategy conclusions (docs/research/2026-07-10-strategy-conclusions.md):** 2-QB core, no 3-QB front-load; **DEF/K revised to draft LATE (rounds 14–18)** — the farm's full-draft opportunity-cost evidence overrides Phase 2's points-capture verdict at the action level (deviation guidance included); tier-break bonus dropped (noise); R7 sim-to-real transfer weak (ρ=0.20, n=6) — backtest evidence outranks sim where they diverge; farm absolute win rates inflated (cross-cell deltas only).
+
+**Phase 4 carry-forward:** ~20 accepted Minors in `.superpowers/sdd/phase3-progress.md`; ADR D7 band is season-dominated (gate-sensitivity note); DEF projection differentiation is the valuation chain's softest link. Pending user inputs unchanged and elevated: slot-turnover annotation, QB cohort material, 2026 draft date, league renewal (R8 trigger armed).
