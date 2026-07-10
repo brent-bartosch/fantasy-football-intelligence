@@ -21,6 +21,7 @@ def test_replacement_ranks_2qb_league_shape():
 def test_qb_hoarding_scenario_moves_baseline():
     r0 = compute_replacement_ranks({"teams": 12, "qb_extra_rostered": 0})
     r12 = compute_replacement_ranks({"teams": 12, "qb_extra_rostered": 12})
+    assert r12["QB"] == 36
     assert r12["QB"] == r0["QB"] + 12
     assert r12["RB"] == r0["RB"]  # hoarding QBs doesn't change RB demand
 
