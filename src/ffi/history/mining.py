@@ -50,9 +50,11 @@ def all_play(conn) -> list[dict]:
     """Per team-season: actual record vs all-play record (regular season only)."""
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT league_key, season, week, team_key, points
-               FROM public.matchup_results WHERE NOT is_playoffs
-               ORDER BY league_key, week"""
+            """SELECT m.league_key, m.season, m.week, m.team_key, m.points
+               FROM public.matchup_results m
+               JOIN raw.yahoo_league_settings s ON s.league_key = m.league_key
+               WHERE NOT m.is_playoffs
+               ORDER BY m.league_key, m.week"""
         )
         rows = cur.fetchall()
     by_lw: dict = defaultdict(dict)
@@ -278,6 +280,7 @@ def transaction_timing(conn) -> list[dict]:
                    least(greatest(1, 1 + floor(extract(epoch FROM tr.ts - ss.wk1_date::timestamptz) / 604800)::int), 17) AS approx_week,
                    count(*)
             FROM raw.yahoo_transactions tr
+            JOIN raw.yahoo_league_settings s ON s.league_key = tr.league_key
             JOIN season_start ss ON ss.league_key = tr.league_key
             WHERE tr.ts IS NOT NULL
             GROUP BY 1, 2, 3 ORDER BY 1, 3
