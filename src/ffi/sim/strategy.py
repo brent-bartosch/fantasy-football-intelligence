@@ -33,7 +33,8 @@ Decision order inside the returned fn (checked in this order, every call):
 4. **Otherwise.** Over every position that is simultaneously: available,
    feasible (`ffi.sim.opponent.feasible`), under its cap (`caps`), not QB
    once `counts["QB"] >= len(qb_by_round)` (the plan is done -- don't
-   voluntarily hoard more), and not DEF/K before `defk_round` (no early
+   voluntarily hoard more), not QB while `round < qb_not_before[counts["QB"]]`
+   (the delay knob below), and not DEF/K before `defk_round` (no early
    luxury DEF/K picks) -- take the top `CAND_WINDOW` (`ffi.sim.opponent`)
    candidates, score each `vorp + tier_break_bonus * is_last_in_tier`, and
    argmax. `is_last_in_tier` is computed against the position's full
@@ -54,6 +55,23 @@ already at its 2-starter requirement doesn't free up any required pick, so
 if there's no slack left it would be infeasible, and the fn defers to
 whatever rule 3/4 can legally offer instead.
 
+`qb_not_before` (Task 11 plan amendment): a rule-4-only delay knob, added
+because Task 11's backtests proved `qb_by_round` deadlines never bind under
+`qb_hoard_12` (the top ~25 VORP are all QBs, so rule 4's argmax drafts a QB
+immediately regardless of the deadline round -- every REF strategy produced
+an identical draft). `qb_not_before[n]` (n = `counts["QB"]` at the time of
+the call, 0-indexed) is the earliest round rule 4 may voluntarily take QB
+#(n+1) -- index 0 gates the 1st QB, index 1 the 2nd, and so on. It ONLY
+narrows rule 4's candidate set; rules 1 (feasibility force) and 2 (QB
+deadline force) are untouched, so a deadline can still force a QB earlier
+than its not-before round -- e.g. `qb_by_round=(3,...)` with
+`qb_not_before=(5,...)` still forces QB at round 3 via rule 2. A
+misconfigured pair where `qb_by_round[n] < qb_not_before[n]` therefore lets
+the deadline win rather than deadlocking the draft -- an intended fail-safe,
+not a bug. `make_strategy_fn` raises `ValueError` if `qb_not_before` is
+shorter than `qb_by_round` (a grid config that couldn't possibly gate every
+planned QB is rejected loudly rather than silently under-indexing).
+
 Deterministic: no `rng` anywhere in this module. Every branch is a pure
 function of its arguments.
 """
@@ -72,6 +90,7 @@ class StrategyParams:
     defk_round: int = 14  # DEF forced at this round if unheld; K at defk_round+1
     caps: tuple = (("QB", 4), ("RB", 9), ("WR", 9), ("TE", 3), ("K", 2), ("DEF", 2))
     tier_break_bonus: float = 0.0  # score bump for closing out a tier
+    qb_not_before: tuple = (1, 1, 1)  # QB #n not draftable (rule 4) before this round
 
 
 def _unmet_positions(counts: dict) -> list[str]:
@@ -117,6 +136,12 @@ def make_strategy_fn(params: StrategyParams) -> PickFn:
     """Build a `PickFn` (see `ffi.sim.draft.PickFn`) implementing the
     decision order documented in this module's docstring for the given
     `params`."""
+    if len(params.qb_not_before) < len(params.qb_by_round):
+        raise ValueError(
+            f"make_strategy_fn: qb_not_before (len {len(params.qb_not_before)}) is "
+            f"shorter than qb_by_round (len {len(params.qb_by_round)}) -- can't gate "
+            "every planned QB"
+        )
     caps = dict(params.caps)
 
     def strategy_fn(
@@ -173,6 +198,12 @@ def make_strategy_fn(params: StrategyParams) -> PickFn:
         scored = []
         for pos in POSITIONS:
             if pos == "QB" and counts.get("QB", 0) >= len(params.qb_by_round):
+                continue
+            if (
+                pos == "QB"
+                and qb_n < len(params.qb_not_before)
+                and round_ < params.qb_not_before[qb_n]
+            ):
                 continue
             if pos in ("DEF", "K") and round_ < params.defk_round:
                 continue

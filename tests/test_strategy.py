@@ -1,4 +1,6 @@
 """Tests for our-seat strategy logic (Phase 3 / Task 8)."""
+import pytest
+
 from ffi.sim.pool import PoolPlayer
 from ffi.sim.strategy import StrategyParams, make_strategy_fn
 
@@ -30,6 +32,7 @@ def test_default_params():
     assert p.defk_round == 14
     assert p.caps == (("QB", 4), ("RB", 9), ("WR", 9), ("TE", 3), ("K", 2), ("DEF", 2))
     assert p.tier_break_bonus == 0.0
+    assert p.qb_not_before == (1, 1, 1)
 
 
 def test_qb_deadline_forces_qb():
@@ -56,6 +59,73 @@ def test_qb_deadline_smallest_unmet_n():
     fn = make_strategy_fn(StrategyParams())
     pick = fn(avail, 5, {"QB": 1}, 14)
     assert pick.position == "QB"
+
+
+# ---------------------------------------------------------------------------
+# qb_not_before delay knob (Task 11 plan amendment): rule-4-only, doesn't
+# affect rule 2's deadline force.
+# ---------------------------------------------------------------------------
+
+
+def _qb_top_vorp_avail():
+    """QB is the argmax by vorp everywhere else on the board -- if rule 4
+    ever considers QB, it wins."""
+    return _avail(
+        QB=[_pp("qbTop", "QB", vorp=100.0)],
+        RB=[_pp("rb1", "RB", vorp=10.0)],
+        WR=[_pp("wr1", "WR", vorp=9.0)],
+    )
+
+
+def test_qb_not_before_default_unchanged_qb_still_taken_round_1():
+    # Default qb_not_before=(1, 1, 1) never blocks round 1 -- QB is still the
+    # argmax pick round 1, same as before this knob existed.
+    avail = _qb_top_vorp_avail()
+    fn = make_strategy_fn(StrategyParams())
+    pick = fn(avail, 1, {}, 17)
+    assert pick.position == "QB"
+    assert pick.ref == "qbTop"
+
+
+def test_qb_not_before_delays_argmax_qb_until_its_round():
+    # qb_by_round pushed well past round 3 so rule 2's deadline never fires
+    # here -- isolates rule 4's qb_not_before filter. Rounds 1-2 must NOT
+    # take the (otherwise dominant) QB; round 3 must.
+    avail = _qb_top_vorp_avail()
+    params = StrategyParams(qb_by_round=(10, 15, 20), qb_not_before=(3, 6, 10))
+    fn = make_strategy_fn(params)
+
+    pick_r1 = fn(avail, 1, {}, 17)
+    assert pick_r1.position != "QB"
+
+    pick_r2 = fn(avail, 2, {}, 17)
+    assert pick_r2.position != "QB"
+
+    pick_r3 = fn(avail, 3, {}, 17)
+    assert pick_r3.position == "QB"
+    assert pick_r3.ref == "qbTop"
+
+
+def test_qb_by_round_deadline_still_wins_over_qb_not_before():
+    # qb_not_before says "not before round 5" but qb_by_round's deadline
+    # forces QB #1 at round 3 anyway -- rule 2 fires before rule 4 is ever
+    # consulted, so the delay knob can't block a deadline force. Intended
+    # fail-safe for a misconfigured (deadline < not_before) pair.
+    avail = _avail(
+        QB=[_pp("qb1", "QB", vorp=1.0)],
+        RB=[_pp("rb1", "RB", vorp=99.0)],
+    )
+    params = StrategyParams(qb_by_round=(3, 6, 10), qb_not_before=(5, 8, 12))
+    fn = make_strategy_fn(params)
+    pick = fn(avail, 3, {}, 17)
+    assert pick.position == "QB"
+    assert pick.ref == "qb1"
+
+
+def test_qb_not_before_shorter_than_qb_by_round_raises():
+    params = StrategyParams(qb_by_round=(2, 5, 9), qb_not_before=(1, 1))
+    with pytest.raises(ValueError, match="qb_not_before"):
+        make_strategy_fn(params)
 
 
 def test_defk_window_respected_not_before_deadline():

@@ -5,10 +5,17 @@ the archived+actuals backtest pools, persist one `sim.batches`/
 `batch_results` row per cell for audit, and either:
 
   --reference   store the composite/band as the new active
-                `sim.backtest_reference` row (deactivating any prior one).
+                `sim.backtest_reference` row (deactivating any prior one),
+                and persist the 12 `sim.batches`/`batch_results` rows for
+                audit.
   --gate        recompute fresh and compare against the active reference;
                 exits nonzero (SystemExit) if composite < reference.composite
                 - reference.band, or if no active reference row exists.
+                Gate runs are read-only against `sim.batches`/
+                `batch_results` -- they compute the 12 cells in memory and
+                write nothing, so repeated `--gate` invocations (e.g. CI on
+                every commit) don't pollute the audit trail with rows
+                indistinguishable from an actual `--reference` build.
 
 Requires `scripts/build_backtest_pools.py` to have populated
 `sim.backtest_pool` for all three seasons first.
@@ -110,16 +117,16 @@ def main() -> None:
         )
     print(f"composite={composite:.4f} band={band:.4f}")
 
-    priors_params = build_slot_priors(conn).params
-    opponent_params = {
-        "tau": TAU,
-        "cand_window": CAND_WINDOW,
-        "roster_damp": ROSTER_DAMP,
-        "priors": priors_params,
-    }
-    _persist_batches(conn, cfg, results, opponent_params)
-
     if args.reference:
+        priors_params = build_slot_priors(conn).params
+        opponent_params = {
+            "tau": TAU,
+            "cand_window": CAND_WINDOW,
+            "roster_damp": ROSTER_DAMP,
+            "priors": priors_params,
+        }
+        _persist_batches(conn, cfg, results, opponent_params)
+
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE sim.backtest_reference SET is_active=false WHERE is_active=true"

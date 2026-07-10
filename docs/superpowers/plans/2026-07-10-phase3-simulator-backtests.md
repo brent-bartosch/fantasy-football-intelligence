@@ -916,10 +916,19 @@ Fixed decisions (document in module docstring):
 - Consumes: everything above; `sim.batches/batch_results/sample_drafts`.
 - Produces: nightly `reports/sim-farm-YYYY-MM-DD.md`; `com.ffi.simfarm` launchd job (02:30, wake-safe, separate from the morning chain).
 
+**Plan amendment (2026-07-10, from Task 11 evidence):** `qb_by_round` deadlines never bind — under qb_hoard_12 VORP the top ~25 players are all QBs, so the argmax rule drafts QBs immediately and every qb_by_round plan produces identical drafts. To make QB timing a real knob, `StrategyParams` gains `qb_not_before: tuple = (1, 1, 1)` — QB #n is excluded from rule-4 candidates (not from forces) before round `qb_not_before[n-1]`. Grid plans below are (qb_not_before, qb_by_round) pairs. This is a strategy change: it must run under the ADR D7 backtest gate (`run_backtests.py --gate`) before the farm ships.
+
 Grid (explicit constant in `run_sim_farm.py` — QB timing is the headline knob):
 
 ```python
-QB_PLANS = [(1, 4, 9), (2, 5, 9), (3, 6, 10), (2, 4, 6), (5, 8, 12), (3, 7)]   # incl. a 2-QB-only plan
+QB_PLANS = [  # (qb_not_before, qb_by_round)
+    ((1, 1, 1), (1, 4, 9)),    # take QBs as VORP dictates (front-loaded)
+    ((1, 3, 6), (2, 5, 9)),    # slight stagger
+    ((2, 5, 9), (3, 6, 10)),   # delayed QB1 to R2, spread hoard
+    ((3, 6, 10), (4, 8, 12)),  # contrarian: first QB no earlier than R3
+    ((1, 2, 4), (2, 4, 6)),    # aggressive 3-QB hoard early
+    ((1, 4, 99), (2, 7, 19)),  # effectively 2-QB build (third QB never required)
+]
 DEFK_ROUNDS = [8, 11, 14, 18]      # tests the Phase 2 DRAFT-EARLY verdicts in context
 TIER_BREAK = [0.0, 8.0]
 SCENARIOS_MAIN = ["qb_hoard_12"]
