@@ -119,6 +119,8 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "nflreadpy" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "polars" },
     { name = "psycopg2-binary" },
     { name = "pydantic" },
@@ -141,6 +143,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "nflreadpy", specifier = ">=0.1" },
+    { name = "numpy", specifier = ">=2.4.6" },
     { name = "polars", specifier = ">=1.0" },
     { name = "psycopg2-binary", specifier = ">=2.9" },
     { name = "pydantic", specifier = ">=2.7" },
