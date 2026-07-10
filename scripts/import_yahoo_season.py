@@ -115,27 +115,45 @@ def import_weeks(conn, lg, league_key: str, season: int, weeks: list[int]):
         print(f"  week {week}: done")
 
 
-def import_outcomes(conn, lg, league_key: str, season: int):
-    """Final standings + weekly team scoreboards + full transaction log (the season time-series)."""
+def import_outcomes(conn, lg, league_key: str, season: int, force: bool = False):
+    """Final standings + weekly team scoreboards + full transaction log (the season time-series).
+
+    Standings and transactions are skipped when already present unless
+    force=True (--force-outcomes) — saves API budget on re-runs. Matchups
+    already had a per-week skip (idempotent); it's untouched here. NOTE: the
+    guard means a mid-season re-run won't pick up NEW transactions without
+    --force-outcomes — correct for archived (completed) seasons, and the
+    flag handles live in-season re-runs."""
     # Standings: one call. Parse rank/name minimally; keep the full entry as payload.
-    standings = yahoo_call(lg.standings)
     with conn.cursor() as cur:
-        for i, entry in enumerate(standings):
-            cur.execute(
-                """INSERT INTO raw.yahoo_standings (league_key, team_key, season, team_name, final_rank, payload)
-                   VALUES (%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT (league_key, team_key) DO UPDATE SET payload=EXCLUDED.payload, fetched_at=now()""",
-                (
-                    league_key,
-                    entry.get("team_key", f"{league_key}.t.{i+1}"),
-                    season,
-                    entry.get("name"),
-                    int(entry["rank"]) if entry.get("rank") else None,
-                    json.dumps(entry, default=str),
-                ),
-            )
-    conn.commit()
-    print(f"  standings: {len(standings)} teams")
+        cur.execute(
+            "SELECT count(*) FROM raw.yahoo_standings WHERE league_key=%s",
+            (league_key,),
+        )
+        n = cur.fetchone()[0]
+    if n > 0 and not force:
+        print(
+            f"  standings: {n} teams already present, skipping (--force-outcomes to re-fetch)"
+        )
+    else:
+        standings = yahoo_call(lg.standings)
+        with conn.cursor() as cur:
+            for i, entry in enumerate(standings):
+                cur.execute(
+                    """INSERT INTO raw.yahoo_standings (league_key, team_key, season, team_name, final_rank, payload)
+                       VALUES (%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT (league_key, team_key) DO UPDATE SET payload=EXCLUDED.payload, fetched_at=now()""",
+                    (
+                        league_key,
+                        entry.get("team_key", f"{league_key}.t.{i+1}"),
+                        season,
+                        entry.get("name"),
+                        int(entry["rank"]) if entry.get("rank") else None,
+                        json.dumps(entry, default=str),
+                    ),
+                )
+        conn.commit()
+        print(f"  standings: {len(standings)} teams")
 
     # Weekly scoreboards: one call per week; store raw, parse in Phase 2.
     end_week = int(yahoo_call(lg.end_week))
@@ -157,6 +175,17 @@ def import_outcomes(conn, lg, league_key: str, season: int):
     print(f"  matchups: weeks 1-{end_week}")
 
     # Transactions: full log (adds/drops/trades). One-ish call; count=999 requests everything.
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM raw.yahoo_transactions WHERE league_key=%s",
+            (league_key,),
+        )
+        n = cur.fetchone()[0]
+    if n > 0 and not force:
+        print(
+            f"  transactions: {n} already present, skipping (--force-outcomes to re-fetch)"
+        )
+        return
     txns = yahoo_call(lg.transactions, "add,drop,trade", 999)
     if len(txns) >= 999:
         raise SystemExit(
@@ -190,6 +219,12 @@ def main():
         action="store_true",
         help="standings + weekly scoreboards + transactions",
     )
+    ap.add_argument(
+        "--force-outcomes",
+        action="store_true",
+        help="re-fetch standings/transactions even if present (matchups always skip "
+        "per-week regardless of this flag — they're immutable once a week is final)",
+    )
     ap.add_argument("--weeks", default=None, help="e.g. 1-17 (per-player stats)")
     args = ap.parse_args()
 
@@ -201,7 +236,7 @@ def main():
     if args.draft:
         import_draft(conn, lg, args.league_key)
     if args.outcomes:
-        import_outcomes(conn, lg, args.league_key, season)
+        import_outcomes(conn, lg, args.league_key, season, force=args.force_outcomes)
     if args.weeks:
         lo, hi = (
             args.weeks.split("-") if "-" in args.weeks else (args.weeks, args.weeks)
