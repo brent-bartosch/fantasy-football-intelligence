@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.ffi.simfarm</string>
+  <key>WorkingDirectory</key><string>/Users/brentbartosch/Development/fantasy_football</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>cd /Users/brentbartosch/Development/fantasy_football &amp;&amp; uv run python scripts/run_sim_farm.py --base-seed $(date +%Y%m%d) &amp;&amp; uv run python scripts/sim_report.py</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>30</integer></dict>
+  <key>StandardOutPath</key><string>logs/launchd-simfarm.log</string>
+  <key>StandardErrorPath</key><string>logs/launchd-simfarm.err</string>
+</dict></plist>
