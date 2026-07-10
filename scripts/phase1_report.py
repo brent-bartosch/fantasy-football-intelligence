@@ -54,6 +54,35 @@ CHECKS = [
             ORDER BY source, started_at DESC
         ) t WHERE status <> 'success'""",
     ),
+    # --- Phase 2 checks ---
+    (
+        "scoring config v1 registered",
+        "SELECT count(*) = 1 FROM scoring.config WHERE version = 1",
+    ),
+    (
+        "2025 yahoo sweep persisted (>=3876 rows)",
+        "SELECT count(*) >= 3876 FROM scoring.player_week_points WHERE source='yahoo_engine'",
+    ),
+    (
+        "nflverse history scored (>=100k rows)",
+        "SELECT count(*) >= 100000 FROM scoring.player_week_points WHERE source='nflverse'",
+    ),
+    (
+        "season-level sleeper projections scored",
+        "SELECT count(*) >= 1000 FROM scoring.projection_points WHERE source='sleeper' AND horizon='season'",
+    ),
+    ("DEF map covers the league", "SELECT count(*) >= 24 FROM public.team_def_map"),
+    (
+        "draft picks have team attribution (NAJEE)",
+        """SELECT count(*) = 0 FROM draft_picks dp
+           JOIN raw.yahoo_league_settings s ON s.league_key = dp.league_id
+           WHERE dp.team_id IS NULL""",
+    ),
+    (
+        "matchup results parsed (>=2900 team-weeks; playoff brackets shrink weeks)",
+        "SELECT count(*) >= 2900 FROM public.matchup_results",
+    ),
+    ("valuation built", "SELECT count(*) >= 100 FROM valuation.player_value"),
 ]
 
 conn = connect()

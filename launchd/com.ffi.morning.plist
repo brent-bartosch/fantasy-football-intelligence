@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.ffi.morning</string>
+  <key>WorkingDirectory</key><string>/Users/brentbartosch/Development/fantasy_football</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string><string>-lc</string>
+    <string>uv run python scripts/ingest_sleeper.py --season 2026 &amp;&amp; uv run python scripts/ingest_fantasypros.py --daily &amp;&amp; uv run python scripts/score_sleeper_projections.py &amp;&amp; uv run python scripts/build_valuation.py &amp;&amp; uv run python scripts/morning_briefing.py</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>logs/launchd-morning.log</string>
+  <key>StandardErrorPath</key><string>logs/launchd-morning.err</string>
+</dict></plist>
