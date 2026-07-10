@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS public.manager_slot_annotations (
     PRIMARY KEY (league_slot, from_season)
 );
 INSERT INTO public.manager_slot_annotations (league_slot, human_label, from_season, note)
-VALUES (12, 'Brent', 2022, 'user; inherited slot ~2022 — exact season to confirm with annotation')
+VALUES (12, 'Brent', 2021, 'user; joined 2021 (user-confirmed 2026-07-10; team Sp00rts 2021, Spœrts 2022+ — verified vs raw.yahoo_league_settings managers, which are unhidden from 2021 onward)')
 ON CONFLICT (league_slot, from_season) DO NOTHING;
 
 -- FantasyPros raw cache (one row per API call; the daily budget counts these).
