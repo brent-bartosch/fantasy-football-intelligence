@@ -380,6 +380,52 @@ def _integration_priors():
     return SlotPriors(latest_season=2025, pos_share=pos_share, params={})
 
 
+def test_qb_force_falls_through_when_cap_would_be_exceeded():
+    # Plan wants QB #3 by round 9, but QB cap is 2. counts already has 2 QBs
+    # (at cap). The QB force for n=3 should NOT force a 3rd QB since it would
+    # exceed the cap -- instead it must fall through to rule 4 and pick another
+    # position. This is the disclosed cap-respecting deviation from the brief's
+    # literal decision order.
+    counts = {"QB": 2, "RB": 2, "WR": 3, "TE": 1}
+    avail = _avail(
+        QB=[_pp("qb3", "QB", vorp=999.0)],
+        RB=[_pp("rb1", "RB", vorp=5.0)],
+    )
+    params = StrategyParams(
+        qb_by_round=(1, 2, 3),
+        caps=(("QB", 2), ("RB", 9), ("WR", 9), ("TE", 3), ("K", 2), ("DEF", 2)),
+    )
+    fn = make_strategy_fn(params)
+    pick = fn(
+        avail, 9, counts, 2
+    )  # round 9 triggers n=3's deadline, but cap=2 prevents it
+    assert pick.position != "QB", "QB force must fall through when it would exceed cap"
+    assert pick.position == "RB"
+
+
+def test_defk_force_falls_through_when_cap_is_zero():
+    # DEF capped at 0 (roster can never legally hold DEF). At defk_round with
+    # no DEF held, the DEF force condition checks `counts["DEF"] < cap`, which
+    # is `0 < 0` (False), so the force falls through to rule 4 instead of
+    # forcing DEF. This params combo (DEF cap=0) is only coherent for isolated
+    # unit testing to pin the fall-through behavior; a real draft cannot satisfy
+    # the roster constraint with DEF uncapped in starter slots.
+    counts = {"QB": 3, "RB": 2, "WR": 3, "TE": 1}
+    avail = _avail(
+        RB=[_pp("rb1", "RB", vorp=5.0)],
+        DEF=[_pp("def1", "DEF", vorp=200.0)],  # huge VORP but will not be forced
+    )
+    params = StrategyParams(
+        caps=(("QB", 4), ("RB", 9), ("WR", 9), ("TE", 3), ("K", 2), ("DEF", 0))
+    )
+    fn = make_strategy_fn(params)
+    pick = fn(
+        avail, 14, counts, 5
+    )  # round 14 is defk_round; DEF force must fall through
+    assert pick.position != "DEF", "DEF force must fall through when cap is 0"
+    assert pick.position == "RB"
+
+
 def test_full_draft_our_roster_has_at_least_plan_qbs():
     from ffi.sim.draft import ROUNDS, run_draft
 
