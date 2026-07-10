@@ -7,7 +7,7 @@
    your own league; daily cached sync of projections/rankings/ADP; ~20 calls/day.
 4. When the key arrives, add to `.env`: `FANTASYPROS_API_KEY=<key>` (never commit).
 
-Status: application submitted 2026-07-09; awaiting approval.
+Status: **key approved and verified live 2026-07-09** (HTTP 200 on 2026 consensus-rankings; key in `.env` as `FANTASYPROS_API_KEY`, never committed). Call budget below is now in effect.
 
 ## Hard limits (ToS, verified 2026-07-08)
 - 1 call/second, 100 calls/day. Personal, non-commercial. No redistribution.
