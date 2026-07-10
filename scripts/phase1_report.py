@@ -83,6 +83,34 @@ CHECKS = [
         "SELECT count(*) >= 2900 FROM public.matchup_results",
     ),
     ("valuation built", "SELECT count(*) >= 100 FROM valuation.player_value"),
+    # --- Phase 3 checks ---
+    (
+        "K valuation present (PK->K fix holds)",
+        "SELECT count(*) >= 20 FROM valuation.player_value WHERE scenario='qb_hoard_12' AND position='K'",
+    ),
+    (
+        "DEF valuation present (DST semantics task holds)",
+        "SELECT count(*) >= 25 FROM valuation.player_value WHERE scenario='qb_hoard_12' AND position='DEF'",
+    ),
+    (
+        "valuation has no stacked duplicates",
+        """SELECT count(*) = 0 FROM (SELECT xwalk_id, scenario FROM valuation.player_value
+        GROUP BY 1,2 HAVING count(*) > 1) d""",
+    ),
+    (
+        "season projections carry weekly bonus model",
+        """SELECT count(*) > 500 FROM scoring.projection_points
+        WHERE horizon='season' AND components->>'bonus_model'='weekly_gamma_v1'
+        AND snapshot_id=(SELECT max(snapshot_id) FROM raw.sleeper_projections WHERE week IS NULL)""",
+    ),
+    (
+        "sim farm has produced results",
+        "SELECT count(*) >= 1 FROM sim.batches WHERE kind='farm' AND finished_at IS NOT NULL",
+    ),
+    (
+        "backtest reference composite active (ADR D7 gate armed)",
+        "SELECT count(*) = 1 FROM sim.backtest_reference WHERE is_active",
+    ),
 ]
 
 conn = connect()
