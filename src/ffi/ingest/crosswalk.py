@@ -86,10 +86,11 @@ def dedupe_identical_players(conn) -> int:
             USING public.player_id_xwalk b
             WHERE a.manual_override = FALSE AND b.manual_override = FALSE
               AND a.xwalk_id > b.xwalk_id
-              AND coalesce(a.gsis_id, '')    = coalesce(b.gsis_id, '')
-              AND coalesce(a.sleeper_id, '') = coalesce(b.sleeper_id, '')
-              AND coalesce(a.yahoo_id, '')   = coalesce(b.yahoo_id, '')
-              AND NOT (a.gsis_id IS NULL AND a.sleeper_id IS NULL AND a.yahoo_id IS NULL)
+              AND a.gsis_id IS NOT NULL AND a.sleeper_id IS NOT NULL AND a.yahoo_id IS NOT NULL
+              AND b.gsis_id IS NOT NULL AND b.sleeper_id IS NOT NULL AND b.yahoo_id IS NOT NULL
+              AND a.gsis_id    = b.gsis_id
+              AND a.sleeper_id = b.sleeper_id
+              AND a.yahoo_id   = b.yahoo_id
             """
         )
         deleted = cur.rowcount

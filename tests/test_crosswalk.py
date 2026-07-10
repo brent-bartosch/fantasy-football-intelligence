@@ -1,6 +1,14 @@
 import pytest
 
-from ffi.ingest.crosswalk import load_xwalk_rows, match_report
+from ffi.ingest.base import IngestError
+from ffi.ingest.crosswalk import (
+    assert_no_duplicate_ids,
+    dedupe_auto_vs_manual,
+    dedupe_identical_players,
+    load_xwalk_rows,
+    match_report,
+    quarantine_conflicting_ids,
+)
 
 
 def _seed(db):
@@ -44,10 +52,6 @@ def test_match_report_excludes_def_and_slug_rows(db):
     assert report["legacy_slug_rows"] == 1
 
 
-from ffi.ingest.base import IngestError
-from ffi.ingest.crosswalk import assert_no_duplicate_ids, dedupe_auto_vs_manual
-
-
 def _insert_xwalk(db, name, yahoo_id, sleeper_id, manual):
     with db.cursor() as cur:
         cur.execute(
@@ -78,9 +82,6 @@ def test_duplicate_yahoo_id_tripwire(db):
     _insert_xwalk(db, "B", "88880", "sb", False)  # two auto rows, same yahoo_id
     with pytest.raises(IngestError, match="duplicate"):
         assert_no_duplicate_ids(db)
-
-
-from ffi.ingest.crosswalk import dedupe_identical_players, quarantine_conflicting_ids
 
 
 def _insert_xwalk_full(db, name, position, gsis_id, sleeper_id, yahoo_id, manual):
@@ -120,6 +121,30 @@ def test_quarantine_conflicting_ids_removes_both_different_humans(db):
         assert cur.fetchone()[0] == 0
     names = {q[2] for q in quarantined}
     assert names == {"Bobby McCray", "Jake Schum"}
+
+
+def test_dedupe_identical_players_does_not_merge_partial_null_id_match(db):
+    # Two DIFFERENT players sharing only gsis_id (sleeper_id/yahoo_id both NULL
+    # on both rows) are NOT an identical non-null triple — dedupe must leave
+    # both rows in place. They should instead fall through to
+    # quarantine_conflicting_ids, which discloses (and removes) both.
+    _insert_xwalk_full(db, "Fred Williams", "DT", "00-0031320", None, None, False)
+    _insert_xwalk_full(db, "Kevin Smith", "RB", "00-0031320", None, None, False)
+    deleted = dedupe_identical_players(db)
+    assert deleted == 0
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM public.player_id_xwalk WHERE gsis_id='00-0031320'"
+        )
+        assert cur.fetchone()[0] == 2
+    quarantined = quarantine_conflicting_ids(db)
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM public.player_id_xwalk WHERE gsis_id='00-0031320'"
+        )
+        assert cur.fetchone()[0] == 0
+    names = {q[2] for q in quarantined}
+    assert names == {"Fred Williams", "Kevin Smith"}
 
 
 def test_quarantine_never_touches_manual_rows(db):
