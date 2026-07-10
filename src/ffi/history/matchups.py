@@ -49,6 +49,34 @@ def _team_row(team_node: dict) -> dict:
     }
 
 
+def short_week_allowed(
+    is_playoffs: bool, week: int, end_week: int, rows: int, num_teams: int
+) -> bool:
+    """Decide whether a short scoreboard week (fewer team-rows than num_teams) is an
+    expected Yahoo playoff-bracket-bye, not data corruption.
+
+    Accepted only when ALL of:
+      - rows < num_teams (an actual shortfall — an overcount is never allowed here,
+        that's always a separate SystemExit in the caller regardless of is_playoffs)
+      - is_playoffs is True (caller has already verified every present matchup in the
+        payload agrees on this before calling — a disagreement is its own SystemExit)
+      - week falls within the league's late-season playoff window, computed
+        independently of the payload's own is_playoffs claim:
+        (end_week - 2) <= week <= end_week, where end_week = max(week) seen in
+        raw.yahoo_matchups for this league_key.
+
+    This closes the circularity of trusting is_playoffs from the same payload being
+    validated: a corrupted regular-season payload could (in theory) claim
+    is_playoffs=True, but it cannot also fake being in the last 3 weeks of the season
+    — that fact comes from an independent query over the whole league's week range.
+    """
+    if rows >= num_teams:
+        return False
+    if not is_playoffs:
+        return False
+    return (end_week - 2) <= week <= end_week
+
+
 def parse_matchup_payload(payload: dict) -> list[dict]:
     rows = []
     for matchup in _iter_matchups(payload):
