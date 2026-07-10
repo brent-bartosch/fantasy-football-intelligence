@@ -42,10 +42,50 @@ def load_xwalk_rows(conn) -> int:
             page_size=5000,
         )
     conn.commit()
+    dedupe_auto_vs_manual(conn)
+    assert_no_duplicate_ids(conn)
     return len(rows)
 
 
+def dedupe_auto_vs_manual(conn) -> int:
+    """Manual-override rows are authoritative: drop any auto row that shares a
+    yahoo_id, sleeper_id, or gsis_id with a manual row (otherwise joins fan out).
+    Returns rows deleted."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM public.player_id_xwalk a
+            USING public.player_id_xwalk m
+            WHERE a.manual_override = FALSE AND m.manual_override = TRUE
+              AND (   (a.yahoo_id   IS NOT NULL AND a.yahoo_id   = m.yahoo_id)
+                   OR (a.sleeper_id IS NOT NULL AND a.sleeper_id = m.sleeper_id)
+                   OR (a.gsis_id    IS NOT NULL AND a.gsis_id    = m.gsis_id))
+            """
+        )
+        deleted = cur.rowcount
+    conn.commit()
+    return deleted
+
+
+def assert_no_duplicate_ids(conn) -> None:
+    """Tripwire: any id column mapping to >1 xwalk row corrupts every join
+    downstream. Fail loud with the offending ids (risk R6)."""
+    with conn.cursor() as cur:
+        for col in ("yahoo_id", "sleeper_id", "gsis_id"):
+            cur.execute(
+                f"""SELECT {col}, count(*) FROM public.player_id_xwalk
+                    WHERE {col} IS NOT NULL GROUP BY 1 HAVING count(*) > 1 LIMIT 10"""
+            )
+            dups = cur.fetchall()
+            if dups:
+                raise IngestError(
+                    f"crosswalk has duplicate {col} values (joins would fan out): {dups}. "
+                    "Resolve via manual_override rows before proceeding."
+                )
+
+
 def match_report(conn) -> dict:
+    assert_no_duplicate_ids(conn)
     with conn.cursor() as cur:
         # Coverage denominator: fantasy-position players with real numeric
         # Yahoo ids only. Legacy slug-format ids (e.g. 'nfl.p.patrick_mahomes',
