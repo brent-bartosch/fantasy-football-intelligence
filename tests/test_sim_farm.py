@@ -551,10 +551,6 @@ def test_render_report_includes_qb_policy_table(db):
     assert "0.55" in report or "55.0" in report
 
 
-def test_render_report_includes_defk_table():
-    pass  # covered by DB-backed test below
-
-
 def test_render_report_defk_table_by_round(db):
     _seed_batch(
         db,
@@ -629,12 +625,6 @@ def test_render_report_no_warn_when_qb1_mean_within_tolerance(db):
     )
     report = sim_report.render_report(db, datetime.date(2026, 7, 10))
     assert "WARN" not in report
-
-
-def test_render_report_no_batches_for_date_raises():
-    # No db fixture needed to hit the "no batches" guard is DB-dependent, so
-    # use the db fixture directly for a clean, empty day.
-    pass
 
 
 def test_render_report_exits_nonzero_when_batch_degraded(db, tmp_path, monkeypatch):

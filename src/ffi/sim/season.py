@@ -34,12 +34,13 @@ from collections import defaultdict
 import numpy as np
 
 from ffi.scoring.config import load_config_v1
+from ffi.scoring.projection_bonus import PROJ_WEEKS
+from ffi.sim.opponent import STARTERS
 from ffi.sim.pool import PoolPlayer
 
 REG_WEEKS = 14
 BYE_WINDOW = (5, 14)  # inclusive week range a player's single bye can fall in
 
-STARTERS = {"QB": 2, "RB": 2, "WR": 3, "TE": 1, "K": 1, "DEF": 1}
 FLEX_POS = ("RB", "WR", "TE")
 
 _CV_SEASON_LO, _CV_SEASON_HI = 2019, 2025
@@ -212,7 +213,7 @@ def _mc_weekly_points(
         cv_arr = np.array([cv_by_pos[p.position] for p in players_flat], dtype=float)
     except KeyError as e:
         raise ValueError(f"evaluate_league: cv_by_pos missing position {e}") from e
-    mean_w = np.array([p.proj_points / 17.0 for p in players_flat], dtype=float)
+    mean_w = np.array([p.proj_points / PROJ_WEEKS for p in players_flat], dtype=float)
     k_arr = 1.0 / (cv_arr**2)
     theta_arr = mean_w * (cv_arr**2)
     points = (

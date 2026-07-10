@@ -132,10 +132,13 @@ def test_build_slot_priors_reads_history_and_applies_floor(db):
         _seed_league(db, f"L{season}", season, all_slots_qb)
 
     with db.cursor() as cur:
+        # Slot 7 (not the migration-seeded slot 12) so this test's own insert
+        # is the thing actually exercising the floor, not a pre-existing
+        # ON-CONFLICT no-op against migration seed data.
         cur.execute(
             "INSERT INTO public.manager_slot_annotations "
             "(league_slot, human_label, from_season, note) "
-            "VALUES (12, 'TestHuman', 2022, 'test seed') "
+            "VALUES (7, 'TestHuman', 2022, 'test seed') "
             "ON CONFLICT (league_slot, from_season) DO NOTHING"
         )
     db.commit()
@@ -146,12 +149,12 @@ def test_build_slot_priors_reads_history_and_applies_floor(db):
     assert priors.latest_season == 2025
     assert priors.params["half_life"] == 4.0
     assert priors.params["shrink_m"] == 8.0
-    assert priors.params["floors"].get(12) == 2022
+    assert priors.params["floors"].get(7) == 2022
     assert priors.params["n_picks_used"] == 12 * 8  # 12 slots x 8 seasons
 
-    # Slot 12 is floored at 2022 — pre-2022 RB rows for slot 12 are excluded,
+    # Slot 7 is floored at 2022 — pre-2022 RB rows for slot 7 are excluded,
     # so its round-1 share should be QB-dominant.
-    assert priors.pos_share[(12, 1)]["QB"] > priors.pos_share[(12, 1)]["RB"]
+    assert priors.pos_share[(7, 1)]["QB"] > priors.pos_share[(7, 1)]["RB"]
 
     # Slot 1 has no floor — both eras count, but 2022-2025 QB rows are more
     # recent (higher weight) than 2018-2021 RB rows, so QB still wins here.

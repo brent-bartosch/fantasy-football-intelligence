@@ -177,7 +177,11 @@ p-value no power; the rank agreement, not the p-value, is the signal.)
   2024 RB/WR/TE and all K projections are synthetic (ECR-rank curve). So the
   backtest differentiates **QB timing only** -- it is silent on DEF/K timing and
   on skill-position projection quality. It is a QB-timing sanity check, not a
-  full-strategy oracle.
+  full-strategy oracle. The borrowed-2026-kicker distortion is substantial in
+  magnitude, not just a technicality: 63/99 borrowed kickers scored zero of
+  their assigned 2023 weeks. It's still rank-safe for the QB-timing conclusion
+  because the same borrow-and-zero mechanic applies symmetrically across all
+  12 seats.
 - **DEF projection precision is weak by construction.** Sleeper's season
   projection is the weak part: flat 9.66 pts/wk uplift, no tier buckets. The
   underlying YoY DEF rank correlation (ρ=0.572, r²≈0.33,

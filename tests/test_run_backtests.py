@@ -8,6 +8,8 @@ they exercise `main()`'s control flow and the DB side effects directly.
 """
 import sys
 
+import pytest
+
 import run_backtests
 
 
@@ -106,4 +108,6 @@ def test_reference_run_activates_new_reference_row(monkeypatch, db):
         assert cur.fetchone()[0] == 1
         cur.execute("SELECT composite FROM sim.backtest_reference WHERE is_active=true")
         (composite,) = cur.fetchone()
-        assert float(composite) == 0.51  # mean(0.50, 0.52) from _canned_results
+        assert float(composite) == pytest.approx(
+            0.51
+        )  # mean(0.50, 0.52) from _canned_results
