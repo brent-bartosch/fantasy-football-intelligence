@@ -78,3 +78,65 @@ def test_duplicate_yahoo_id_tripwire(db):
     _insert_xwalk(db, "B", "88880", "sb", False)  # two auto rows, same yahoo_id
     with pytest.raises(IngestError, match="duplicate"):
         assert_no_duplicate_ids(db)
+
+
+from ffi.ingest.crosswalk import dedupe_identical_players, quarantine_conflicting_ids
+
+
+def _insert_xwalk_full(db, name, position, gsis_id, sleeper_id, yahoo_id, manual):
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO public.player_id_xwalk"
+            " (name, position, gsis_id, sleeper_id, yahoo_id, manual_override)"
+            " VALUES (%s,%s,%s,%s,%s,%s)",
+            (name, position, gsis_id, sleeper_id, yahoo_id, manual),
+        )
+    db.commit()
+
+
+def test_dedupe_identical_players_collapses_same_human(db):
+    # Same person, double-entered upstream under two positions — identical ids.
+    _insert_xwalk_full(db, "Ray Agnew", "RB", "00-0000001", "s1", "28011", False)
+    _insert_xwalk_full(db, "Ray Agnew", "DL", "00-0000001", "s1", "28011", False)
+    deleted = dedupe_identical_players(db)
+    assert deleted == 1
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM public.player_id_xwalk WHERE yahoo_id='28011'"
+        )
+        assert cur.fetchone()[0] == 1
+
+
+def test_quarantine_conflicting_ids_removes_both_different_humans(db):
+    # Different people erroneously sharing a gsis_id upstream — no yahoo/sleeper
+    # overlap, so dedupe_identical_players would not touch these.
+    _insert_xwalk_full(db, "Bobby McCray", "DE", "00-0022888", None, None, False)
+    _insert_xwalk_full(db, "Jake Schum", "PN", "00-0022888", "1399", "26613", False)
+    quarantined = quarantine_conflicting_ids(db)
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM public.player_id_xwalk WHERE gsis_id='00-0022888'"
+        )
+        assert cur.fetchone()[0] == 0
+    names = {q[2] for q in quarantined}
+    assert names == {"Bobby McCray", "Jake Schum"}
+
+
+def test_quarantine_never_touches_manual_rows(db):
+    # A manual row sharing an id with an auto row: dedupe_auto_vs_manual removes
+    # the auto row first, so quarantine_conflicting_ids has nothing left to do —
+    # the manual row survives both.
+    _insert_xwalk(db, "Researched Player", "77770", "sm", True)
+    _insert_xwalk(db, "Researched Player", "77770", "sa", False)
+    dedupe_auto_vs_manual(db)
+    dedupe_identical_players(db)
+    quarantined = quarantine_conflicting_ids(db)
+    assert quarantined == []
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT count(*), bool_and(manual_override) FROM public.player_id_xwalk"
+            " WHERE yahoo_id='77770'"
+        )
+        count, all_manual = cur.fetchone()
+        assert count == 1
+        assert all_manual is True

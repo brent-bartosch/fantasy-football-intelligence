@@ -15,9 +15,20 @@ def main():
     args = ap.parse_args()
     conn = connect()
     report = match_report(conn)
-    print(f"{len(report['unmatched'])} unmatched fantasy-relevant Yahoo players")
+    # BUG FIX (found during live review): `players` stores one row per
+    # season/league-key per player, so the same (name, position, numeric
+    # yahoo_id) triple can appear multiple times in report["unmatched"].
+    # Looping over the raw list would INSERT a duplicate manual_override row
+    # per repeat, immediately re-creating the exact duplicate-id problem this
+    # script exists to fix (and tripping assert_no_duplicate_ids at the end,
+    # after the damage is already committed). Dedupe before matching.
+    unmatched = sorted(set(report["unmatched"]))
+    print(
+        f"{len(report['unmatched'])} unmatched fantasy-relevant Yahoo player-rows "
+        f"/ {len(unmatched)} unique unmatched players"
+    )
     applied, ambiguous, unfound = 0, [], []
-    for name, pos, yid in report["unmatched"]:
+    for name, pos, yid in unmatched:
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT xwalk_id, name, gsis_id, sleeper_id, fantasypros_id

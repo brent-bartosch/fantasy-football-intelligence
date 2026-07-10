@@ -43,6 +43,12 @@ def load_xwalk_rows(conn) -> int:
         )
     conn.commit()
     dedupe_auto_vs_manual(conn)
+    identical_deleted = dedupe_identical_players(conn)
+    quarantined = quarantine_conflicting_ids(conn)
+    print(
+        f"crosswalk cleanup: identical-dupes removed={identical_deleted} "
+        f"quarantined={len(quarantined)}"
+    )
     assert_no_duplicate_ids(conn)
     return len(rows)
 
@@ -65,6 +71,69 @@ def dedupe_auto_vs_manual(conn) -> int:
         deleted = cur.rowcount
     conn.commit()
     return deleted
+
+
+def dedupe_identical_players(conn) -> int:
+    """Among auto rows, collapse groups that share an identical NON-NULL
+    (gsis_id, sleeper_id, yahoo_id) triple — these are the same physical
+    human double-entered upstream (e.g. once per listed position, or with a
+    name-spelling variant), so collapsing to one row loses zero information.
+    Keeps the row with the smallest xwalk_id per group. Returns rows deleted."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM public.player_id_xwalk a
+            USING public.player_id_xwalk b
+            WHERE a.manual_override = FALSE AND b.manual_override = FALSE
+              AND a.xwalk_id > b.xwalk_id
+              AND coalesce(a.gsis_id, '')    = coalesce(b.gsis_id, '')
+              AND coalesce(a.sleeper_id, '') = coalesce(b.sleeper_id, '')
+              AND coalesce(a.yahoo_id, '')   = coalesce(b.yahoo_id, '')
+              AND NOT (a.gsis_id IS NULL AND a.sleeper_id IS NULL AND a.yahoo_id IS NULL)
+            """
+        )
+        deleted = cur.rowcount
+    conn.commit()
+    return deleted
+
+
+def quarantine_conflicting_ids(conn) -> list:
+    # FAIL-LOUD Level 2: visible fallback. Upstream ff_playerids contains rows
+    # where DIFFERENT players share an id (fringe/retired players). Keeping either
+    # row would silently corrupt joins; blocking forever on upstream junk breaks
+    # the pipeline. Quarantined rows are printed here AND any that matter resurface
+    # in the reviewed unmatched-player report; manual_override rows are the
+    # escape hatch to restore a researched mapping.
+    quarantined = []
+    with conn.cursor() as cur:
+        for col in ("yahoo_id", "sleeper_id", "gsis_id"):
+            cur.execute(
+                f"""SELECT {col} FROM public.player_id_xwalk
+                    WHERE manual_override = FALSE AND {col} IS NOT NULL
+                    GROUP BY {col} HAVING count(*) > 1"""
+            )
+            dup_ids = [r[0] for r in cur.fetchall()]
+            if not dup_ids:
+                continue
+            cur.execute(
+                f"""SELECT xwalk_id, {col}, name, position FROM public.player_id_xwalk
+                    WHERE manual_override = FALSE AND {col} = ANY(%s)""",
+                (dup_ids,),
+            )
+            rows = cur.fetchall()
+            for xwalk_id, val, name, position in rows:
+                print(
+                    f"QUARANTINE [{col}={val}] xwalk_id={xwalk_id} "
+                    f"name={name!r} position={position}"
+                )
+                quarantined.append((col, val, name, position))
+            cur.execute(
+                f"DELETE FROM public.player_id_xwalk "
+                f"WHERE manual_override = FALSE AND {col} = ANY(%s)",
+                (dup_ids,),
+            )
+    conn.commit()
+    return quarantined
 
 
 def assert_no_duplicate_ids(conn) -> None:
