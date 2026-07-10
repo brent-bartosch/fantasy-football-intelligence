@@ -198,6 +198,24 @@ def build_slot_priors(conn) -> SlotPriors:
 
     latest_season = max(season for _, season, _, _ in good_rows)
     pos_share = _pos_share_from_rows(good_rows, floors, latest_season)
+
+    # Assert full 12x19 slot-round coverage for Task 6 sim.
+    missing_keys = []
+    for slot in range(1, 13):
+        for rnd in range(_MIN_ROUND, _MAX_ROUND + 1):
+            key = (slot, rnd)
+            if key not in pos_share or not pos_share[key]:
+                missing_keys.append(key)
+
+    if missing_keys:
+        missing_slots = sorted({slot for slot, _ in missing_keys})
+        raise ValueError(
+            f"build_slot_priors: incomplete slot-round coverage; "
+            f"missing keys for slot(s) {missing_slots}. "
+            "Likely cause: a slot's entire draft history was excluded by an annotation floor. "
+            f"Missing: {missing_keys}"
+        )
+
     params = {
         "half_life": HALF_LIFE,
         "shrink_m": SHRINK_M,

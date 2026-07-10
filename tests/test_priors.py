@@ -220,3 +220,27 @@ def test_build_slot_priors_fails_loud_on_excessive_junk_positions(db):
 
     with pytest.raises(ValueError, match="unexpected position"):
         build_slot_priors(db)
+
+
+def test_build_slot_priors_raises_on_floored_out_slot(db):
+    """When an annotation floor excludes a slot's entire draft history,
+    build_slot_priors must raise ValueError naming the affected slot(s),
+    not silently drop them from pos_share. Task 6 sim requires full 12x19
+    coverage."""
+    all_slots_qb = {slot: "QB" for slot in range(1, 13)}
+    for season in range(2018, 2026):
+        _seed_league(db, f"F{season}", season, all_slots_qb)
+
+    # Set annotation floor for slot 5 at 2026 — after all draft picks (2018-2025).
+    # This removes 100% of slot 5's draft history.
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO public.manager_slot_annotations "
+            "(league_slot, human_label, from_season, note) "
+            "VALUES (5, 'TestHuman', 2026, 'test seed — floors out entire history') "
+            "ON CONFLICT (league_slot, from_season) DO NOTHING"
+        )
+    db.commit()
+
+    with pytest.raises(ValueError, match="incomplete slot-round coverage"):
+        build_slot_priors(db)
