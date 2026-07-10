@@ -20,7 +20,7 @@
 ## 2. Mandated first commit (final-review condition)
 
 Consolidation BEFORE any new Yahoo-touching code:
-- `ffi.ids`: one home for Yahoo key parsing (currently triplicated: `numeric_id()` in fix_placeholder_players.py, inline `.split(".p.")`/`.split('.l.')` in import_yahoo_season.py, SQL `split_part` in crosswalk.py ×3).
+- `ffi.ids`: one home for Yahoo key parsing (currently scattered: `numeric_id()` in fix_placeholder_players.py, inline `.split(".p.")`/`.split('.l.')` in import_yahoo_season.py, SQL `split_part` in crosswalk.py ×4).
 - Throttle wrapper in `ffi.yahoo_client` (replaces 6+ hand-rolled `time.sleep(2)` sites).
 - Fold the nflverse 4× duplicated column lists into one source→DB mapping structure while in there (deferred T5 Minor).
 
@@ -29,7 +29,7 @@ Consolidation BEFORE any new Yahoo-touching code:
 1. **Scoring engine** (`scoring` schema): versioned config v1 from `league_rules.md`; pure function of (stat_line, config_version) — property test enforces purity (ADR D7). **Golden tests: exact match vs Yahoo's official 2025 points — the data is already local** (`raw.yahoo_player_week.total_points` for 228 players × 17 weeks; stat lines in the `stats` JSONB). Pick ~40 edge-case fixtures (bonus thresholds, multi-bonus stacks, negative games, DEF tiers, return yards).
 2. **First-down imputation** (R16): regressions on `raw.nflverse_player_week` (FD per carry / per reception by profile); validate vs Sleeper native `*_fd` — divergence >15% = investigate, never silently prefer either source. Divergence report is a deliverable.
 3. **Threshold-bonus distribution pricing** (R16): per-player yardage distributions from nflverse week-level variance; calibration report (predicted vs actual bonus hit rates on 2023–25).
-4. **Valuation layer** (`valuation` schema): VORP with **computed** 2QB baseline (12 teams × 2QB + flex; sensitivity analysis over QB-hoarding assumptions — R16), GMM tiers (fftiers method) on FP superflex ECR + our adjusted values, uncertainty bands.
+4. **Valuation layer** (`valuation` schema): VORP with **computed** 2QB baseline (12 teams × 2QB + flex; sensitivity analysis over QB-hoarding assumptions — R16), GMM tiers (fftiers method) on FP superflex ECR + our adjusted values, uncertainty bands. **Explicit deliverable — DEF streaming-baseline check** (research doc, flagged for Phase 2): does an elite DEF's projected points clear the replacement-level *streaming* DEF baseline under this league's enhanced DEF scoring (TFL, 3-and-outs, 4th-down stops, points/yards-allowed tiers)? Same check for K distance-tier scoring. Answer decides draft-early-vs-stream for K/DEF on the board — easy to build the whole engine without ever answering it; don't.
 5. **Historical mining report** (the user-facing deliverable): draft position → outcome across 16 NAJEE seasons; manager tendencies **by slot** (+ user's turnover annotation, see §5); test the research hypotheses — champions' draft-vs-waiver value split, transaction timing vs the weeks-10–14 cluster, actual trade frequency/QB premiums, all-play vs record divergence.
 6. **Morning briefing v1** (design §4.7): cron/launchd ingestion + generated report with the health header (`scripts/phase1_report.py` checks are the seed); agent digestion with capped adjustments can be v1.5 — the plumbing and health reporting come first.
 
@@ -42,6 +42,9 @@ Consolidation BEFORE any new Yahoo-touching code:
 - Crosswalk `match_report` dup-yahoo_id join guard (matters once manual overrides coexist with auto rows).
 - Per-position FD validation in scoring-engine input checks (Sleeper union-check tolerates partial drift).
 - Manager slot-turnover annotation table (see §5); migrate the "user inherited slot ~2022" fact from the audit script's print into data.
+- `ffi.yahoo_client`: wrap raw `JSONDecodeError` (corrupted legacy token file) and network exceptions from `refresh_access_token()` in actionable `YahooAuthError`s (T6 deferred Minor — matters for the 2026 renewal re-audit and any re-imports).
+- `import_outcomes` skip guards for standings/transactions (currently always re-fetches; matchups has one — T9 deferred Minor; saves API budget on the 2026 renewal re-run).
+- Sleeper `week=None` (season-level projections) path: **untested and Phase 2 depends on it** (scoring engine works on season stat lines) — test it live + add the missing unit coverage before relying on it.
 
 ## 5. Pending user inputs (ask early, none block plan-writing)
 
@@ -57,5 +60,6 @@ Consolidation BEFORE any new Yahoo-touching code:
 - **FantasyPros:** key in `.env` (`FANTASYPROS_API_KEY`), **verified live 2026-07-09**. Hard limits 1/sec, 100/day; budget ≤30/day, cache to `raw`; never store FP historical stats (ToS). Runbook: `docs/runbooks/fantasypros-api.md`.
 - **Sleeper:** 2026 projections already live (validated with `pass_fd/rush_fd/rec_fd`). Snapshot via `scripts/ingest_sleeper.py --season 2026 --week N` (week omitted = season-level, untested path).
 - **nflreadpy real column names:** `passing_interceptions` (not `interceptions`); fumbles lost split per-type (`rushing_/receiving_/sack_fumbles_lost`) — `raw.nflverse_player_week.fumbles_lost` is the derived sum.
-- **Data inventory:** `draft_picks` holds BOTH leagues' picks (join `raw.yahoo_league_settings` to select NAJEE chain); `raw.yahoo_player_week/standings/matchups/transactions` are NAJEE-season time-series (matchups payloads unparsed — Phase 2 parses); 102+63 residual placeholder players are known-undrafted rows; crosswalk 94.2% with DEF/slug exclusions by design.
+- **Data inventory:** `draft_picks` holds BOTH leagues' picks (join `raw.yahoo_league_settings` to select NAJEE chain); `raw.yahoo_player_week/standings/matchups/transactions` are NAJEE-season time-series (matchups payloads unparsed — Phase 2 parses); **63 residual placeholder players** (live count 2026-07-09; none drafted in the NAJEE chain — verify anytime with `SELECT count(*) FROM players WHERE player_name LIKE 'Player %' OR position='TBD'`); crosswalk 94.2% with DEF/slug exclusions by design.
+- **Idempotency nuance:** drafts and player-weeks SKIP when complete; `import_outcomes` standings/transactions are idempotent (upserts) but ALWAYS re-fetch on re-run — see §4 skip-guard item before burning API budget on re-runs.
 - **Health gate:** `uv run python scripts/phase1_report.py` must stay 12/12 OK — extend it with Phase 2 checks rather than replacing it.
