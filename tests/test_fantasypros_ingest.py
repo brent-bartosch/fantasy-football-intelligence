@@ -1,4 +1,5 @@
 import pytest
+import requests
 
 from ffi.ingest.fantasypros import (
     FpBudgetExceededError,
@@ -35,6 +36,21 @@ def test_budget_guard_blocks_at_limit(db, monkeypatch):
     with pytest.raises(FpBudgetExceededError):
         client.get("consensus-rankings", {"position": "WR"})
     assert fp_calls_today(db) == 2  # the blocked call wrote nothing
+
+
+def test_http_error_propagates_no_partial_snapshot(db, monkeypatch):
+    # Task 11 Step 0 (from Task 10 review): an HTTP failure must propagate
+    # loudly and must NOT write a partial/blocked snapshot row.
+    client = FpClient(db, api_key="test", daily_budget=30)
+
+    def _raise(url, params):
+        raise requests.HTTPError("boom")
+
+    monkeypatch.setattr(client, "_http_get", _raise)
+    before = fp_calls_today(db)
+    with pytest.raises(requests.HTTPError):
+        client.get("consensus-rankings", {"position": "QB"})
+    assert fp_calls_today(db) == before  # no partial snapshot row written
 
 
 def test_latest_fp_payload_reads_cache(db):
