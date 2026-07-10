@@ -106,6 +106,10 @@ def _tier_fired(stats: dict, indicators: dict) -> bool:
     return any(float(stats[k]) != 0.0 for k in indicators if k in stats)
 
 
+def _tier_indicators_present(stats: dict, indicators: dict) -> bool:
+    return any(k in stats for k in indicators)
+
+
 def stat_line_from_yahoo(stats: dict) -> StatLine:
     if "position_type" not in stats:
         raise IngestError(
@@ -130,10 +134,32 @@ def stat_line_from_yahoo(stats: dict) -> StatLine:
         # tier bonus in that case (verified: total_points=0.00 for all such rows
         # in the 2025 sweep), so the field is genuinely absent, not an observed
         # zero. Skip the cross-check too since there is no tier to validate.
+        #
+        # That "absent" treatment only applies when the tier indicator keys are
+        # present-and-zero. If the raw key showed up but NONE of its indicator
+        # keys are present at all, that's schema drift (Yahoo changed/omitted
+        # the tier fields), not a bye week — fail loud rather than silently
+        # dropping the stat.
+        if "Pts Allow" in stats and not _tier_indicators_present(
+            stats, _DEF_PTS_INDICATORS
+        ):
+            raise IngestError(
+                "DEF payload has raw key 'Pts Allow' but none of its tier "
+                "indicator keys are present — schema drift, cannot distinguish "
+                "bye week from a genuine value"
+            )
         if _tier_fired(stats, _DEF_PTS_INDICATORS):
             _check_indicators(stats, "Pts Allow", _DEF_PTS_INDICATORS)
         else:
             fields.pop("points_allowed", None)
+        if "Def Yds Allow" in stats and not _tier_indicators_present(
+            stats, _DEF_YDS_INDICATORS
+        ):
+            raise IngestError(
+                "DEF payload has raw key 'Def Yds Allow' but none of its tier "
+                "indicator keys are present — schema drift, cannot distinguish "
+                "bye week from a genuine value"
+            )
         if _tier_fired(stats, _DEF_YDS_INDICATORS):
             _check_indicators(stats, "Def Yds Allow", _DEF_YDS_INDICATORS)
         else:

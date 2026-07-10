@@ -1,7 +1,11 @@
 import pytest
 
 from ffi.ingest.base import IngestError
-from ffi.scoring.yahoo_adapter import stat_line_from_yahoo
+from ffi.scoring.yahoo_adapter import (
+    _DEF_PTS_INDICATORS,
+    _DEF_YDS_INDICATORS,
+    stat_line_from_yahoo,
+)
 
 OFFENSE_PAYLOAD = {
     "Fum": 0.0,
@@ -99,6 +103,42 @@ def test_def_mapping_uses_raw_values():
 def test_def_tier_indicator_cross_check_fails_on_mismatch():
     bad = dict(DEF_PAYLOAD, **{"Pts Allow 21-27": 0.0, "Pts Allow 14-20": 1.0})
     with pytest.raises(IngestError, match="tier indicator"):
+        stat_line_from_yahoo(bad)
+
+
+def test_def_bye_week_all_indicators_zero_treated_absent():
+    bye = dict(DEF_PAYLOAD)
+    bye["Pts Allow"] = 0.0
+    bye["Def Yds Allow"] = 0.0
+    for k in _DEF_PTS_INDICATORS:
+        bye[k] = 0.0
+    for k in _DEF_YDS_INDICATORS:
+        bye[k] = 0.0
+    line = stat_line_from_yahoo(bye)
+    assert line.points_allowed is None
+    assert line.yards_allowed is None
+
+
+def test_def_genuine_shutout_indicator_fired_kept():
+    shutout = dict(DEF_PAYLOAD)
+    shutout["Pts Allow"] = 0.0
+    shutout["Def Yds Allow"] = 75.0
+    for k in _DEF_PTS_INDICATORS:
+        shutout[k] = 0.0
+    shutout["Pts Allow 0"] = 1.0
+    for k in _DEF_YDS_INDICATORS:
+        shutout[k] = 0.0
+    shutout["Yds Allow 0-99"] = 1.0
+    line = stat_line_from_yahoo(shutout)
+    assert line.points_allowed == 0.0
+    assert line.yards_allowed == 75.0
+
+
+def test_def_missing_all_pts_allow_indicators_fails_loud():
+    bad = dict(DEF_PAYLOAD)
+    for k in _DEF_PTS_INDICATORS:
+        del bad[k]
+    with pytest.raises(IngestError, match="tier indicator keys are present"):
         stat_line_from_yahoo(bad)
 
 
