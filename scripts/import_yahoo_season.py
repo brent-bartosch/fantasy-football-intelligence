@@ -3,15 +3,15 @@
 into raw.yahoo_player_week. Idempotent; throttled (R15)."""
 import argparse
 import json
-import time
 from ffi.db import connect
-from ffi.yahoo_client import get_session, get_league
+from ffi.ids import league_game_code, player_key as make_player_key, player_numeric_id
+from ffi.yahoo_client import get_session, get_league, yahoo_call
 
 BATCH = 25
 
 
 def import_draft(conn, lg, league_key: str):
-    picks = [p for p in lg.draft_results() if "player_id" in p]
+    picks = [p for p in yahoo_call(lg.draft_results) if "player_id" in p]
     if not picks:
         raise SystemExit(f"No draft results for {league_key} — draft not held yet?")
     with conn.cursor() as cur:
@@ -23,7 +23,7 @@ def import_draft(conn, lg, league_key: str):
                 f"draft_picks already present for {league_key}; skipping (idempotent)"
             )
             return
-        s = lg.settings()
+        s = yahoo_call(lg.settings)
         num_teams = s["num_teams"]
         # draft_picks.league_id has an FK to leagues — upsert the league row first
         cur.execute(
@@ -31,8 +31,9 @@ def import_draft(conn, lg, league_key: str):
                VALUES (%s,%s,%s,%s) ON CONFLICT (league_id) DO NOTHING""",
             (league_key, s["name"], int(s["season"]), int(num_teams)),
         )
+        game_code = league_game_code(league_key)
         for p in picks:
-            player_key = f"{league_key.split('.l.')[0]}.p.{p['player_id']}"
+            player_key = make_player_key(game_code, p["player_id"])
             cur.execute(
                 """INSERT INTO players (yahoo_player_id, player_name, position, nfl_team)
                    VALUES (%s, %s, 'TBD', 'TBD') ON CONFLICT (yahoo_player_id) DO NOTHING""",
@@ -70,7 +71,7 @@ def import_weeks(conn, lg, league_key: str, season: int, weeks: list[int]):
         """,
             (league_key,),
         )
-        ids = [int(r[0].split(".p.")[-1]) for r in cur.fetchall()]
+        ids = [int(player_numeric_id(r[0])) for r in cur.fetchall()]
     if not ids:
         raise SystemExit(f"no drafted players for {league_key} — run --draft first")
     print(f"{len(ids)} players, weeks {weeks}")
@@ -93,7 +94,7 @@ def import_weeks(conn, lg, league_key: str, season: int, weeks: list[int]):
                     f"  week {week}: INCOMPLETE ({existing}/{len(ids)}) — re-fetching"
                 )
         for i in range(0, len(ids), BATCH):
-            stats = lg.player_stats(ids[i : i + BATCH], "week", week=week)
+            stats = yahoo_call(lg.player_stats, ids[i : i + BATCH], "week", week=week)
             with conn.cursor() as cur:
                 for s in stats:
                     cur.execute(
@@ -111,14 +112,13 @@ def import_weeks(conn, lg, league_key: str, season: int, weeks: list[int]):
                         ),
                     )
             conn.commit()
-            time.sleep(2)  # throttle (R15); on 999 the request raises and we exit loud
         print(f"  week {week}: done")
 
 
 def import_outcomes(conn, lg, league_key: str, season: int):
     """Final standings + weekly team scoreboards + full transaction log (the season time-series)."""
     # Standings: one call. Parse rank/name minimally; keep the full entry as payload.
-    standings = lg.standings()
+    standings = yahoo_call(lg.standings)
     with conn.cursor() as cur:
         for i, entry in enumerate(standings):
             cur.execute(
@@ -136,10 +136,9 @@ def import_outcomes(conn, lg, league_key: str, season: int):
             )
     conn.commit()
     print(f"  standings: {len(standings)} teams")
-    time.sleep(2)
 
     # Weekly scoreboards: one call per week; store raw, parse in Phase 2.
-    end_week = int(lg.end_week())
+    end_week = int(yahoo_call(lg.end_week))
     for week in range(1, end_week + 1):
         with conn.cursor() as cur:
             cur.execute(
@@ -148,18 +147,17 @@ def import_outcomes(conn, lg, league_key: str, season: int):
             )
             if cur.fetchone():
                 continue
-        payload = lg.matchups(week=week)
+        payload = yahoo_call(lg.matchups, week=week)
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO raw.yahoo_matchups (league_key, season, week, payload) VALUES (%s,%s,%s,%s)",
                 (league_key, season, week, json.dumps(payload, default=str)),
             )
         conn.commit()
-        time.sleep(2)
     print(f"  matchups: weeks 1-{end_week}")
 
     # Transactions: full log (adds/drops/trades). One-ish call; count=999 requests everything.
-    txns = lg.transactions("add,drop,trade", 999)
+    txns = yahoo_call(lg.transactions, "add,drop,trade", 999)
     if len(txns) >= 999:
         raise SystemExit(
             f"{league_key}: transaction fetch hit the 999 cap — results would be truncated; raise the cap"
@@ -181,7 +179,6 @@ def import_outcomes(conn, lg, league_key: str, season: int):
             )
     conn.commit()
     print(f"  transactions: {len(txns)}")
-    time.sleep(2)
 
 
 def main():
@@ -199,7 +196,7 @@ def main():
     conn = connect()
     session = get_session()
     lg = get_league(session, args.league_key)
-    season = int(lg.settings()["season"])
+    season = int(yahoo_call(lg.settings)["season"])
 
     if args.draft:
         import_draft(conn, lg, args.league_key)

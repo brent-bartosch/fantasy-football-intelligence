@@ -1,5 +1,6 @@
 import polars as pl
 import psycopg2.extras
+from ffi.ids import yahoo_numeric_id_filter_sql, yahoo_numeric_id_sql
 from ffi.ingest.base import IngestError
 
 # DEF excluded: team defenses map by team abbreviation, not player IDs —
@@ -50,15 +51,14 @@ def match_report(conn) -> dict:
         # Yahoo ids only. Legacy slug-format ids (e.g. 'nfl.p.patrick_mahomes',
         # duplicates of numeric-ID rows from an earlier import) can never join
         # on yahoo_id, so they are excluded from coverage but counted below.
+        yid = yahoo_numeric_id_sql("p.yahoo_player_id")
         cur.execute(
-            """
-            SELECT p.player_name, p.position, split_part(p.yahoo_player_id, '.p.', 2) AS yid,
-                   x.xwalk_id
+            f"""
+            SELECT p.player_name, p.position, {yid} AS yid, x.xwalk_id
             FROM players p
-            LEFT JOIN public.player_id_xwalk x
-                   ON x.yahoo_id = split_part(p.yahoo_player_id, '.p.', 2)
+            LEFT JOIN public.player_id_xwalk x ON x.yahoo_id = {yid}
             WHERE p.position IN %s
-              AND split_part(p.yahoo_player_id, '.p.', 2) ~ '^[0-9]+$'
+              AND {yahoo_numeric_id_filter_sql('p.yahoo_player_id')}
         """,
             (FANTASY_POSITIONS,),
         )
@@ -66,10 +66,10 @@ def match_report(conn) -> dict:
         cur.execute("SELECT count(*) FROM players WHERE position = 'DEF'")
         def_rows = cur.fetchone()[0]
         cur.execute(
-            """
+            f"""
             SELECT count(*) FROM players
             WHERE position IN %s
-              AND split_part(yahoo_player_id, '.p.', 2) !~ '^[0-9]+$'
+              AND NOT {yahoo_numeric_id_filter_sql('yahoo_player_id')}
         """,
             (FANTASY_POSITIONS,),
         )

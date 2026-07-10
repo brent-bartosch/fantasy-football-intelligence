@@ -1,6 +1,9 @@
 import json
 import os
 import pathlib
+import time
+
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -52,9 +55,21 @@ def get_session():
 
     if not OAUTH_FILE.exists():
         _build_oauth_file()
-    sc = OAuth2(None, None, from_file=str(OAUTH_FILE))
+    try:
+        sc = OAuth2(None, None, from_file=str(OAUTH_FILE))
+    except json.JSONDecodeError as exc:
+        raise YahooAuthError(
+            f"{OAUTH_FILE} is corrupted (invalid JSON: {exc}). Delete it and "
+            f"re-run — it is rebuilt from .env + {LEGACY_TOKEN}."
+        ) from exc
     if not sc.token_is_valid():
-        sc.refresh_access_token()
+        try:
+            sc.refresh_access_token()
+        except requests.RequestException as exc:
+            raise YahooAuthError(
+                f"Network failure refreshing the Yahoo token: {exc}. "
+                "Check connectivity and retry; the token file was not changed."
+            ) from exc
     if not sc.token_is_valid():
         raise YahooAuthError(
             "Yahoo token refresh failed — refresh token likely revoked. "
@@ -67,3 +82,37 @@ def get_league(session, league_key: str):
     import yahoo_fantasy_api as yfa
 
     return yfa.league.League(session, league_key)
+
+
+YAHOO_MIN_INTERVAL_S = 2.0
+_last_call_monotonic = 0.0
+
+
+class YahooRateLimitError(Exception):
+    """Yahoo error 999 = IP lockout for ~10-15 minutes. Never retry; stop ALL
+    Yahoo API work and re-run after cooldown (risk R15/R2, ADR Domain 1)."""
+
+
+def yahoo_call(fn, *args, **kwargs):
+    """Every Yahoo API call goes through here: enforces >=2s spacing between
+    calls (R15) and converts error-999 responses into YahooRateLimitError.
+    No retries by design (ADR Domain 1: a retry against 999 only extends the
+    lockout)."""
+    global _last_call_monotonic
+    wait = YAHOO_MIN_INTERVAL_S - (time.monotonic() - _last_call_monotonic)
+    if wait > 0:
+        time.sleep(wait)
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:
+        # yahoo_fantasy_api surfaces 999 as RuntimeError text containing the
+        # status code. A substring false-positive would only rename one loud
+        # error to a scarier loud error — acceptable.
+        if "999" in str(exc):
+            raise YahooRateLimitError(
+                "Yahoo returned error 999 (rate-limit lockout, ~10-15 min). "
+                f"Stop all Yahoo API work now; re-run after cooldown. Original: {exc}"
+            ) from exc
+        raise
+    finally:
+        _last_call_monotonic = time.monotonic()

@@ -2,60 +2,56 @@ import polars as pl
 import psycopg2.extras
 from ffi.ingest.base import BaseIngester, IngestError
 
-REQUIRED_COLS = {
+# ONE source→DB mapping. REQUIRED_COLS, insert order, and stat columns all
+# derive from this — extend HERE (and the migration) when adding columns.
+COLUMN_MAP: list[tuple[str, str]] = [
+    ("player_id", "gsis_id"),
+    ("season", "season"),
+    ("week", "week"),
+    ("player_display_name", "player_name"),
+    ("position", "position"),
+    ("team", "team"),
+    ("completions", "completions"),
+    ("attempts", "attempts"),
+    ("passing_yards", "passing_yards"),
+    ("passing_tds", "passing_tds"),
+    ("passing_first_downs", "passing_first_downs"),
+    ("passing_interceptions", "interceptions"),
+    ("carries", "carries"),
+    ("rushing_yards", "rushing_yards"),
+    ("rushing_tds", "rushing_tds"),
+    ("rushing_first_downs", "rushing_first_downs"),
+    ("receptions", "receptions"),
+    ("targets", "targets"),
+    ("receiving_yards", "receiving_yards"),
+    ("receiving_tds", "receiving_tds"),
+    ("receiving_first_downs", "receiving_first_downs"),
+    ("punt_return_yards", "punt_return_yards"),
+    ("kickoff_return_yards", "kickoff_return_yards"),
+]
+# db_col -> source columns summed (fill_null(0) inside the sum only).
+DERIVED_SUMS: dict[str, list[str]] = {
+    "fumbles_lost": [
+        "rushing_fumbles_lost",
+        "receiving_fumbles_lost",
+        "sack_fumbles_lost",
+    ],
+}
+
+_IDENTITY_SRC = {
     "player_id",
     "season",
     "week",
     "player_display_name",
     "position",
     "team",
-    "completions",
-    "attempts",
-    "passing_yards",
-    "passing_tds",
-    "passing_first_downs",
-    "passing_interceptions",
-    "carries",
-    "rushing_yards",
-    "rushing_tds",
-    "rushing_first_downs",
-    "receptions",
-    "targets",
-    "receiving_yards",
-    "receiving_tds",
-    "receiving_first_downs",
-    "punt_return_yards",
-    "kickoff_return_yards",
-    "rushing_fumbles_lost",
-    "receiving_fumbles_lost",
-    "sack_fumbles_lost",
 }
-
-_DB_COLS = [
-    "gsis_id",
-    "season",
-    "week",
-    "player_name",
-    "position",
-    "team",
-    "completions",
-    "attempts",
-    "passing_yards",
-    "passing_tds",
-    "passing_first_downs",
-    "interceptions",
-    "carries",
-    "rushing_yards",
-    "rushing_tds",
-    "rushing_first_downs",
-    "receptions",
-    "targets",
-    "receiving_yards",
-    "receiving_tds",
-    "receiving_first_downs",
-    "punt_return_yards",
-    "kickoff_return_yards",
-    "fumbles_lost",
+REQUIRED_COLS = {src for src, _ in COLUMN_MAP} | {
+    c for cols in DERIVED_SUMS.values() for c in cols
+}
+_DB_COLS = [db for _, db in COLUMN_MAP] + list(DERIVED_SUMS)
+_STAT_COLS = [src for src, _ in COLUMN_MAP if src not in _IDENTITY_SRC] + [
+    c for cols in DERIVED_SUMS.values() for c in cols
 ]
 
 
@@ -81,34 +77,13 @@ class NflversePlayerWeekIngester(BaseIngester):
             raise IngestError(f"nflverse: zero rows for seasons {self.seasons}")
         return df.height
 
-    _STAT_COLS = [
-        "completions",
-        "attempts",
-        "passing_yards",
-        "passing_tds",
-        "passing_first_downs",
-        "passing_interceptions",
-        "carries",
-        "rushing_yards",
-        "rushing_tds",
-        "rushing_first_downs",
-        "receptions",
-        "targets",
-        "receiving_yards",
-        "receiving_tds",
-        "receiving_first_downs",
-        "punt_return_yards",
-        "kickoff_return_yards",
-        "rushing_fumbles_lost",
-        "receiving_fumbles_lost",
-        "sack_fumbles_lost",
-    ]
+    # Class attribute alias to the module-level derivation (kept for internal
+    # references); see COLUMN_MAP/DERIVED_SUMS above for the single source of
+    # truth.
+    _STAT_COLS = _STAT_COLS
 
     def _derive_rows(self, df: pl.DataFrame) -> list[tuple]:
-        """Pure row derivation: null-id guard, fumbles_lost total, insert order."""
-        # nflverse includes a few team-level artifact rows with null player_id.
-        # Drop them only if provably empty (all stat columns zero/null);
-        # otherwise fail loud — real stats without a player id means bad data.
+        """Pure row derivation: null-id guard, derived sums, insert order."""
         null_id = df.filter(pl.col("player_id").is_null())
         if null_id.height:
             nonzero = null_id.filter(
@@ -121,41 +96,11 @@ class NflversePlayerWeekIngester(BaseIngester):
                     f"nonzero stats — refusing to drop or load them."
                 )
             df = df.filter(pl.col("player_id").is_not_null())
-        # fumbles_lost is a derived total across fumble types; nulls treated as 0
-        # for the sum only (not a defaulted load-bearing field).
-        df = df.with_columns(
-            (
-                pl.col("rushing_fumbles_lost").fill_null(0)
-                + pl.col("receiving_fumbles_lost").fill_null(0)
-                + pl.col("sack_fumbles_lost").fill_null(0)
-            ).alias("fumbles_lost")
-        )
-        ordered_src = [
-            "player_id",
-            "season",
-            "week",
-            "player_display_name",
-            "position",
-            "team",
-            "completions",
-            "attempts",
-            "passing_yards",
-            "passing_tds",
-            "passing_first_downs",
-            "passing_interceptions",
-            "carries",
-            "rushing_yards",
-            "rushing_tds",
-            "rushing_first_downs",
-            "receptions",
-            "targets",
-            "receiving_yards",
-            "receiving_tds",
-            "receiving_first_downs",
-            "punt_return_yards",
-            "kickoff_return_yards",
-            "fumbles_lost",
-        ]
+        for db_col, src_cols in DERIVED_SUMS.items():
+            df = df.with_columns(
+                sum((pl.col(c).fill_null(0) for c in src_cols), pl.lit(0)).alias(db_col)
+            )
+        ordered_src = [src for src, _ in COLUMN_MAP] + list(DERIVED_SUMS)
         return df.select(ordered_src).rows()
 
     def store(self, conn, run_id: int, df: pl.DataFrame) -> None:

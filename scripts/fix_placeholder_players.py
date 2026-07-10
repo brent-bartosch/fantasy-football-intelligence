@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """Backfill real names/positions/teams for placeholder players created by the legacy import."""
-import time
 from ffi.db import connect
-from ffi.yahoo_client import get_session, get_league
+from ffi.ids import player_numeric_id
+from ffi.yahoo_client import get_session, get_league, yahoo_call
 
 BATCH = 25
-
-
-def numeric_id(player_key: str) -> str:
-    # '461.p.12345' -> '12345'; bare '12345' stays as is
-    return player_key.split(".p.")[-1]
 
 
 def main():
@@ -40,9 +35,9 @@ def main():
         lg = get_league(session, league_key)
         for i in range(0, len(players), BATCH):
             chunk = players[i : i + BATCH]
-            ids = [int(numeric_id(k)) for _, k in chunk]
+            ids = [int(player_numeric_id(k)) for _, k in chunk]
             try:
-                details = lg.player_details(ids)
+                details = yahoo_call(lg.player_details, ids)
             except Exception as exc:  # fail loud per-chunk, keep going, report at end
                 failed.append((league_key, ids, str(exc)))
                 consecutive_failures += 1
@@ -50,13 +45,12 @@ def main():
                     raise SystemExit(
                         f"aborting: {consecutive_failures} consecutive chunk failures — systemic (auth/999?)"
                     )
-                time.sleep(2)
                 continue
             consecutive_failures = 0
             by_id = {str(d["player_id"]): d for d in details}
             with conn.cursor() as cur:
                 for player_id, ykey in chunk:
-                    d = by_id.get(numeric_id(ykey))
+                    d = by_id.get(player_numeric_id(ykey))
                     if d is None:
                         failed.append((league_key, ykey, "not in response"))
                         continue
@@ -71,7 +65,6 @@ def main():
                     )
                     fixed += 1
             conn.commit()
-            time.sleep(2)  # throttle (R15)
 
     with conn.cursor() as cur:
         cur.execute(
