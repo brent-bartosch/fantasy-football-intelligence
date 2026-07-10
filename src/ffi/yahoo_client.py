@@ -104,6 +104,8 @@ def yahoo_call(fn, *args, **kwargs):
         time.sleep(wait)
     try:
         return fn(*args, **kwargs)
+    except requests.exceptions.RequestException as exc:
+        raise YahooAuthError(f"network failure calling yahoo: {exc}") from exc
     except Exception as exc:
         # yahoo_fantasy_api surfaces 999 as RuntimeError text containing the
         # status code. A substring false-positive would only rename one loud

@@ -59,3 +59,13 @@ def test_gmm_tiers_orders_and_covers():
     assert tiers[0] == 1  # best player is tier 1
     assert tiers == sorted(tiers)  # descending values -> nondecreasing tier
     assert tiers[-1] > tiers[0]  # more than one tier found
+
+
+def test_gmm_tiers_rejects_fewer_than_four_values():
+    with pytest.raises(ValueError, match="need >=4 values"):
+        gmm_tiers([300.0, 200.0, 100.0])
+
+
+def test_compute_baselines_rejects_unsorted_pool():
+    with pytest.raises(ValueError, match="sorted descending"):
+        compute_baselines({"QB": [100.0, 300.0, 200.0]}, {"QB": 2})

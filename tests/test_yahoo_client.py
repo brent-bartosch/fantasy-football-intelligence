@@ -41,6 +41,17 @@ def test_yahoo_call_returns_result():
     assert yc.yahoo_call(lambda x: x * 2, 21) == 42
 
 
+def test_yahoo_call_converts_request_exception_to_yahoo_auth_error():
+    """Phase 2 Task 1 Minor: network-level RequestException must surface as
+    the domain error, not leak requests internals."""
+
+    def boom():
+        raise requests.exceptions.ConnectionError("dns down")
+
+    with pytest.raises(yc.YahooAuthError):
+        yc.yahoo_call(boom)
+
+
 def test_get_session_corrupted_oauth_file(monkeypatch, tmp_path):
     bad = tmp_path / "yahoo_oauth.json"
     bad.write_text("{not json")

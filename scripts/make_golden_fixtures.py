@@ -92,7 +92,7 @@ for label, where, order, limit in CLASSES:
                        total_points::text, stats
                 FROM raw.yahoo_player_week
                 WHERE season = 2025 AND {where}
-                ORDER BY {order} LIMIT %s""",
+                ORDER BY {order}, yahoo_player_id, week LIMIT %s""",
             (limit,),
         )
         rows = cur.fetchall()
