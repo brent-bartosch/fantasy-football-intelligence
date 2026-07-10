@@ -38,7 +38,7 @@ with conn.cursor() as cur:
         WHERE pp.source = 'sleeper' AND pp.horizon = 'season'
           AND pp.config_version = %s
           AND pp.snapshot_id = (SELECT max(snapshot_id) FROM raw.sleeper_projections WHERE week IS NULL)
-          AND x.position IN ('QB','RB','WR','TE','K','PK')
+          AND x.position IN ('QB','RB','WR','TE','K','PK','DEF')
         ORDER BY pp.points DESC
         """,
         (cfg.version,),
@@ -49,8 +49,6 @@ if not rows:
         "no scored season projections joined to crosswalk — run Tasks 5-7 first"
     )
 
-# NOTE: DEF valuation deliberately absent from v1 board values — Task 12 answers
-# draft-vs-stream for DEF/K first; K included for completeness.
 # Kickers are position 'PK' in public.player_id_xwalk; normalize to 'K' so
 # they land in the K pool instead of being silently dropped (Phase 3 Task 2 —
 # K had zero valuation rows before this fix).
@@ -100,7 +98,17 @@ with conn.cursor() as cur:
         )
 
         ranks = compute_replacement_ranks(scen)
-        ranks = {p: r for p, r in ranks.items() if p in by_pos}  # DEF absent in v1
+        missing = {p for p in ranks if p not in by_pos}
+        if missing:
+            print(
+                f"WARNING: no projection pool for {missing} — excluded from this scenario"
+            )
+        ranks = {p: r for p, r in ranks.items() if p in by_pos}
+        if "DEF" in by_pos and len(by_pos["DEF"]) < 25:
+            print(
+                f"WARNING: DEF pool has only {len(by_pos['DEF'])} projected teams "
+                "(<25) — replacement baseline may be unstable"
+            )
         baselines = compute_baselines(
             {p: [pts for _, _, pts in by_pos[p]] for p in ranks}, ranks
         )

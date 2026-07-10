@@ -10,6 +10,7 @@ import psycopg2.extras
 from ffi.db import connect
 from ffi.scoring.bonus_pricing import estimate_weekly_cv
 from ffi.scoring.config import ensure_config_in_db, load_config_v1
+from ffi.scoring.def_projection import def_projection_points, fit_def_uplift
 from ffi.scoring.engine import score_components
 from ffi.scoring.fd_impute import fit_fd_rates, impute_fd
 from ffi.scoring.projection_bonus import season_bonus_ev
@@ -63,12 +64,37 @@ with conn.cursor() as cur:
 
 fd_rates = fit_fd_rates(conn, seasons=_FD_FIT_SEASONS)
 cv = estimate_weekly_cv(conn, seasons=_FD_FIT_SEASONS)
+def_uplift = fit_def_uplift(conn, cfg)
+print(f"DEF uplift fitted: {def_uplift:.3f} pts/week (2025 yahoo_engine ground truth)")
 
 horizon = "season" if week is None else f"week:{week}"
+def_games = 17.0 if week is None else 1.0
 out = []
 for rec in payload:
     stats = rec.get("stats", {})
     pos = (rec.get("player") or {}).get("position")
+    if pos == "DEF":
+        # Team-defense records sit beside the skill-position path entirely:
+        # no FD imputation, no yardage-bonus EV (defense has no offense
+        # yardage bonuses) — see ffi.scoring.def_projection module docstring
+        # and docs/research/2026-07-10-dst-semantics.md for the verified
+        # bucket/counting-stat semantics this branch relies on.
+        points, comps = def_projection_points(
+            stats, cfg, uplift_per_week=def_uplift, games=def_games
+        )
+        comps_out = {k: str(v) for k, v in comps.items()}
+        out.append(
+            (
+                "sleeper",
+                snapshot_id,
+                str(rec["player_id"]),
+                horizon,
+                cfg.version,
+                points,
+                json.dumps(comps_out),
+            )
+        )
+        continue
     line = stat_line_from_sleeper(rec)
     fd_source = None
     gsis_id = None
