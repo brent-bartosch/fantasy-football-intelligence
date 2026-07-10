@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "description": "NAJEE 'LEFT EYE' HARRIS 2025 rules (league_rules.md; cumulative bonus stacking + base weights verified against Yahoo official 2025 points, 2026-07-09)",
+  "offense": {
+    "weights": {
+      "pass_completions": 0.5,
+      "pass_incompletions": -0.5,
+      "pass_yards": 0.04,
+      "pass_tds": 6,
+      "interceptions": -2,
+      "pick_sixes": -4,
+      "rush_attempts": 0.33,
+      "rush_yards": 0.1,
+      "rush_tds": 6,
+      "rush_first_downs": 1,
+      "receptions": 1,
+      "rec_yards": 0.1,
+      "rec_tds": 6,
+      "rec_first_downs": 1,
+      "return_yards": 0.1,
+      "return_tds": 6,
+      "two_point_conversions": 2,
+      "fumbles": -1,
+      "fumbles_lost": -2,
+      "offensive_fumble_return_tds": 6
+    },
+    "yardage_bonuses": {
+      "pass_yards": [
+        {"threshold": 300, "points": 3},
+        {"threshold": 400, "points": 4},
+        {"threshold": 500, "points": 5}
+      ],
+      "rush_yards": [
+        {"threshold": 100, "points": 3},
+        {"threshold": 150, "points": 4},
+        {"threshold": 200, "points": 5}
+      ],
+      "rec_yards": [
+        {"threshold": 100, "points": 3},
+        {"threshold": 150, "points": 4},
+        {"threshold": 200, "points": 5}
+      ],
+      "return_yards": [
+        {"threshold": 200, "points": 3},
+        {"threshold": 250, "points": 4},
+        {"threshold": 300, "points": 5}
+      ]
+    },
+    "bonus_stacking": "cumulative"
+  },
+  "kicking": {
+    "weights": {
+      "fg_0_19": 3, "fg_20_29": 3, "fg_30_39": 3, "fg_40_49": 4, "fg_50_plus": 5,
+      "fg_miss_0_19": -3, "fg_miss_20_29": -2, "fg_miss_30_39": -1,
+      "pat_made": 1, "pat_missed": -1
+    }
+  },
+  "defense": {
+    "weights": {
+      "sacks": 1, "def_interceptions": 2, "fumble_recoveries": 2,
+      "defensive_tds": 6, "safeties": 2, "blocked_kicks": 2,
+      "fourth_down_stops": 2, "tackles_for_loss": 1, "three_and_outs": 1,
+      "extra_point_returns": 2
+    },
+    "points_allowed_tiers": [
+      {"max": 0, "points": 10}, {"max": 6, "points": 7}, {"max": 13, "points": 4},
+      {"max": 20, "points": 1}, {"max": 27, "points": 0}, {"max": 34, "points": -1},
+      {"max": null, "points": -4}
+    ],
+    "yards_allowed_tiers": [
+      {"max": -1, "points": 20}, {"max": 99, "points": 10}, {"max": 199, "points": 7},
+      {"max": 299, "points": 4}, {"max": 399, "points": 0}, {"max": 499, "points": -4},
+      {"max": null, "points": -7}
+    ]
+  }
+}
