@@ -28,6 +28,16 @@ ROW = {
     "fumbles": 1,
     "two_point_conversions": 0,
     "special_teams_tds": 0,
+    "fg_made_0_19": None,
+    "fg_made_20_29": None,
+    "fg_made_30_39": None,
+    "fg_made_40_49": None,
+    "fg_made_50_plus": None,
+    "fg_missed_0_19": None,
+    "fg_missed_20_29": None,
+    "fg_missed_30_39": None,
+    "pat_made": None,
+    "pat_missed": None,
 }
 
 
@@ -52,3 +62,33 @@ def test_known_gaps_documented():
     assert line.pick_sixes is None  # not in nflverse
     assert "pick_sixes" in KNOWN_GAPS
     assert "offensive_fumble_return_tds" in KNOWN_GAPS
+
+
+K_ROW = dict(
+    ROW,
+    position="K",
+    fg_made_0_19=1,
+    fg_made_20_29=2,
+    fg_made_30_39=0,
+    fg_made_40_49=1,
+    fg_made_50_plus=1,
+    fg_missed_0_19=0,
+    fg_missed_20_29=1,
+    fg_missed_30_39=0,
+    pat_made=3,
+    pat_missed=1,
+)
+
+
+def test_kicker_row_maps_fg_and_pat_fields():
+    line = stat_line_from_nflverse(K_ROW)
+    assert line.fg_0_19 == 1
+    assert line.fg_20_29 == 2
+    assert line.fg_30_39 == 0
+    assert line.fg_40_49 == 1
+    assert line.fg_50_plus == 1
+    assert line.fg_miss_0_19 == 0
+    assert line.fg_miss_20_29 == 1
+    assert line.fg_miss_30_39 == 0
+    assert line.pat_made == 3
+    assert line.pat_missed == 1

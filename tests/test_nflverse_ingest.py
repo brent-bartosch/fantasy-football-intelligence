@@ -105,3 +105,36 @@ def test_derive_rows_sums_fumbles_and_two_point_conversions_and_maps_special_tea
     assert row["special_teams_tds"] == 2
     assert row["fumbles"] == 2
     assert row["two_point_conversions"] == 2
+
+
+def test_derive_rows_maps_kicking_columns_and_sums_50_plus_treating_nulls_as_zero():
+    ing = NflversePlayerWeekIngester(seasons=[2024])
+    df = _row_frame(
+        [
+            {
+                "player_id": "00-0000001",
+                "fg_made_0_19": 1,
+                "fg_made_20_29": 2,
+                "fg_made_30_39": 0,
+                "fg_made_40_49": 1,
+                "fg_made_50_59": 1,
+                "fg_made_60_": None,
+                "fg_missed_0_19": 0,
+                "fg_missed_20_29": 1,
+                "fg_missed_30_39": 0,
+                "pat_made": 3,
+                "pat_missed": 1,
+            }
+        ]
+    )
+    rows = ing._derive_rows(df)
+    assert len(rows) == 1
+    db_cols = [db for _, db in COLUMN_MAP] + list(DERIVED_SUMS)
+    row = dict(zip(db_cols, rows[0]))
+    assert row["fg_made_0_19"] == 1
+    assert row["fg_made_20_29"] == 2
+    assert row["fg_made_40_49"] == 1
+    assert row["fg_made_50_plus"] == 1  # 50_59(1) + 60_(None->0)
+    assert row["fg_missed_20_29"] == 1
+    assert row["pat_made"] == 3
+    assert row["pat_missed"] == 1

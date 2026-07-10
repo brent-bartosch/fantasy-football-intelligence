@@ -33,6 +33,16 @@ _REQUIRED = (
     "fumbles_lost",
     "two_point_conversions",
     "special_teams_tds",
+    "fg_made_0_19",
+    "fg_made_20_29",
+    "fg_made_30_39",
+    "fg_made_40_49",
+    "fg_made_50_plus",
+    "fg_missed_0_19",
+    "fg_missed_20_29",
+    "fg_missed_30_39",
+    "pat_made",
+    "pat_missed",
 )
 
 
@@ -68,5 +78,15 @@ def stat_line_from_nflverse(row: dict) -> StatLine:
         two_point_conversions=n("two_point_conversions"),
         fumbles=n("fumbles"),
         fumbles_lost=n("fumbles_lost"),
+        fg_0_19=n("fg_made_0_19"),
+        fg_20_29=n("fg_made_20_29"),
+        fg_30_39=n("fg_made_30_39"),
+        fg_40_49=n("fg_made_40_49"),
+        fg_50_plus=n("fg_made_50_plus"),
+        fg_miss_0_19=n("fg_missed_0_19"),
+        fg_miss_20_29=n("fg_missed_20_29"),
+        fg_miss_30_39=n("fg_missed_30_39"),
+        pat_made=n("pat_made"),
+        pat_missed=n("pat_missed"),
         # pick_sixes / offensive_fumble_return_tds: KNOWN_GAPS — stay None.
     )

@@ -29,6 +29,15 @@ COLUMN_MAP: list[tuple[str, str]] = [
     ("punt_return_yards", "punt_return_yards"),
     ("kickoff_return_yards", "kickoff_return_yards"),
     ("special_teams_tds", "special_teams_tds"),
+    ("fg_made_0_19", "fg_made_0_19"),
+    ("fg_made_20_29", "fg_made_20_29"),
+    ("fg_made_30_39", "fg_made_30_39"),
+    ("fg_made_40_49", "fg_made_40_49"),
+    ("fg_missed_0_19", "fg_missed_0_19"),
+    ("fg_missed_20_29", "fg_missed_20_29"),
+    ("fg_missed_30_39", "fg_missed_30_39"),
+    ("pat_made", "pat_made"),
+    ("pat_missed", "pat_missed"),
 ]
 # db_col -> source columns summed (fill_null(0) inside the sum only).
 DERIVED_SUMS: dict[str, list[str]] = {
@@ -43,6 +52,8 @@ DERIVED_SUMS: dict[str, list[str]] = {
         "rushing_2pt_conversions",
         "receiving_2pt_conversions",
     ],
+    # league bins 50+ together; nflverse splits 50_59 / 60_.
+    "fg_made_50_plus": ["fg_made_50_59", "fg_made_60_"],
 }
 
 _IDENTITY_SRC = {
