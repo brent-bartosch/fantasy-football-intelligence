@@ -93,6 +93,18 @@ lines = [
 report.write_text("\n".join(lines) + "\n")
 print(f"median={median:.1%}, over-15%={len(over15)}/{len(rows)} -> {report}")
 if median > 0.15:
+    # Gate's failure was adjudicated 2026-07-09 (controller-decided design
+    # amendment concluding Task 8): re-verified against nflverse 2019-2025
+    # ground truth, this method's fitted rates are correct (they reproduce
+    # known real-world FD conversion rates and are internally consistent by
+    # construction). The divergence is diagnostic of a Sleeper-side native-FD
+    # data-quality problem instead (native_fd exceeds native_volume for 53% of
+    # rec pairs / 96% of pass pairs — mathematically impossible), so Sleeper's
+    # native FD was rejected as a scoring input rather than this method being
+    # revised. See docs/research/2026-07-09-fd-imputation-divergence.md
+    # ("Resolution" section) and sleeper_adapter.py's _IGNORED_EXACT comment.
+    # The gate itself is intentionally left in place — it documents the
+    # finding and should keep firing on a re-run; it is not a bug to "fix."
     raise SystemExit(
         "MEDIAN divergence >15% — the imputation method itself is off (R16): "
         "investigate rate pooling/shrinkage before FP FD-imputation is trusted."

@@ -70,3 +70,74 @@ Method: see ffi/scoring/fd_impute.py docstring (pooled position rates 2019-2025 
 | Brenen Thompson | WR | rec | 19 | 8.5 | 55% |
 | Bhayshul Tuten | RB | rec | 23 | 10.5 | 55% |
 | Woody Marks | RB | rec | 14 | 6.1 | 55% |
+
+## Resolution (2026-07-09, controller-decided design amendment concluding Task 8)
+
+**Decision: Sleeper's native FD (`rush_fd`/`rec_fd`) is REJECTED as a scoring input.
+Imputed FD from `ffi.scoring.fd_impute` (rates fitted on nflverse 2019-2025 actuals) is
+the FD source for ALL projection scoring, effective immediately.**
+
+Evidence, consolidated from the divergence run above plus a direct comparison against
+nflverse 2025 ground truth:
+
+- nflverse 2025 actuals show RB rush-FD/carry in the 0.18-0.27 range and RB rec-FD/rec in
+  the 0.27-0.49 range for real players. Sleeper's 2026 season projections carry
+  0.41-0.50 and 0.76-0.87 for the same players — roughly 2x inflated.
+- 53% of (player, rec) pairs and 96% of (player, pass) pairs have `native_fd > native_volume`
+  — a mathematical impossibility (a first down credit cannot exceed the receptions/completions
+  that could produce it). This is not noise; it is broad-based, systemic miscalibration.
+- Under this league's +1/FD scoring, the inflation is worth roughly 50-70 phantom points per
+  season for high-volume RB/WR players (see the Bijan Robinson spot-check below).
+- The imputation method itself independently reproduces well-known real-world NFL first-down
+  conversion rates and is internally consistent by construction (rate = observed FD / observed
+  volume over real plays, so it can never exceed 1.0). It was not the source of the divergence.
+
+This resolves the "Concerns" raised at the end of Task 8: the median->15% `SystemExit` in
+`scripts/fd_divergence_report.py` remains in the code (see the comment added there
+2026-07-09) — it correctly documents the finding and should keep firing if re-run — but the
+finding has been adjudicated: the failure indicates a Sleeper-side native-FD data-quality
+problem, not a defect in the imputation method, so the guard does not block using imputed FD
+as the scoring source.
+
+### Implementation
+
+- `src/ffi/scoring/sleeper_adapter.py`: `rush_fd`/`rec_fd` moved out of `_SLEEPER_MAP` into
+  `_IGNORED_EXACT` — the adapter's `StatLine` never carries native FD. The keys are still
+  classified as "known" (ingest-shape check only), never scored.
+- `scripts/score_sleeper_projections.py`: for QB/RB/WR/TE records, `impute_fd` is called on
+  each record's own projected rush/rec/pass volume (using a sleeper_id -> gsis_id crosswalk
+  for player-level shrunk rates where available) and the result is injected into the
+  `StatLine` via `model_copy(update=...)` before scoring. `pass_first_downs` is intentionally
+  left unset (not a scored stat in this league's config). `components.fd_source = "imputed"`
+  is recorded on every scored record that went through imputation, for auditability.
+
+### Re-scored snapshot 3 (2026 season-level, re-run 2026-07-09 post-amendment)
+
+QBs still dominate the top 10 (Josh Allen #1 at 673.10, down slightly from 675.80 — QBs get
+imputed pass volume same as before via `pass_completions`/`pass_yards`/etc.; only their small
+rush-FD component moves). RB/WR totals dropped materially, as expected from de-inflating FD:
+
+- **Bijan Robinson (RB) spot-check**: native rush_fd=137.2, rec_fd=53.7 (190.9 total FD
+  points at +1/FD). Imputed: rush_first_downs=72.57, rec_first_downs=24.74 (97.31 total).
+  Old score 632.20 -> new score 538.61, a drop of 93.59 points — matches
+  `old_points - (native_fd_sum - imputed_fd_sum)` exactly (632.20 - 93.593 = 538.607),
+  confirming the imputation swap is the only change affecting his score.
+
+New top-10 by points (snapshot 3, config v1):
+
+| player_ref | pos | points |
+|---|---|---|
+| 4984 (Josh Allen) | QB | 673.10 |
+| 11564 (Drake Maye) | QB | 626.30 |
+| 11566 (Jayden Daniels) | QB | 615.40 |
+| 4881 (Lamar Jackson) | QB | 611.31 |
+| 6904 (Jalen Hurts) | QB | 610.05 |
+| 6797 (Justin Herbert) | QB | 603.96 |
+| 12508 (Jaxson Dart) | QB | 601.71 |
+| 6770 | QB | 598.70 |
+| 11563 (Bo Nix) | QB | 598.56 |
+| 3294 (Dak Prescott) | QB | 597.95 |
+
+QBs sweep the top 10 both before and after — the amendment does not change the shape of the
+projection rankings' top tier, only the magnitude of RB/WR/TE scores (which fall, as intended,
+now that phantom FD points are removed).

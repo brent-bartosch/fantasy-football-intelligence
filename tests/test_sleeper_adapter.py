@@ -45,7 +45,11 @@ def test_qb_mapping():
     assert line.pick_sixes == 1.0  # pass_int_td
     assert line.interceptions == 11.0
     assert line.two_point_conversions == 1.0  # pass_2pt + rush_2pt + rec_2pt
-    assert line.rush_first_downs == 14.0
+    # rush_fd/rec_fd are deliberately NOT mapped into the StatLine (2026-07-09):
+    # Sleeper's native FD is rejected as a scoring input — see sleeper_adapter's
+    # _IGNORED_EXACT comment and docs/research/2026-07-09-fd-imputation-divergence.md.
+    # Imputed FD (ffi.scoring.fd_impute) is injected downstream instead.
+    assert line.rush_first_downs is None
     assert line.receptions is None  # absent for this QB record
 
 

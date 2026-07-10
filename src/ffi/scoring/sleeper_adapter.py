@@ -23,11 +23,9 @@ _SLEEPER_MAP = {
     "rush_att": "rush_attempts",
     "rush_yd": "rush_yards",
     "rush_td": "rush_tds",
-    "rush_fd": "rush_first_downs",
     "rec": "receptions",
     "rec_yd": "rec_yards",
     "rec_td": "rec_tds",
-    "rec_fd": "rec_first_downs",
     "fum": "fumbles",  # not observed live (only fum_lost/fum_rec are); kept defensively
     "fum_lost": "fumbles_lost",
     "pr_yd": "return_yards_punt",
@@ -75,6 +73,22 @@ _IGNORED_EXACT = {
     # the league's FD bonus only scores rush/rec first downs (config has no
     # "pass_first_downs" weight and StatLine has no matching field) — QB
     # passing first downs are not an individually scored stat.
+    # --- rush_fd / rec_fd: REJECTED as a scoring input (2026-07-09). Verified
+    # against nflverse 2019-2025 ground truth (see fd_impute.py and
+    # docs/research/2026-07-09-fd-imputation-divergence.md): Sleeper's native
+    # FD projections run ~2x our fitted historical rates (RB rush-FD/carry
+    # 0.18-0.27 true vs. 0.41-0.50 projected; RB rec-FD/rec 0.27-0.49 true vs.
+    # 0.76-0.87 projected) and are frequently internally impossible — 53% of
+    # rec pairs and 96% of pass pairs have native_fd > native_volume (more
+    # first downs than the receptions/completions that could produce them).
+    # Under this league's +1/FD scoring, that inflation is worth ~50-70
+    # phantom points/season for volume players. DECISION: imputed FD from
+    # ffi.scoring.fd_impute.impute_fd (fitted on real nflverse plays) is the
+    # FD source for ALL projection scoring; these keys are kept mapped here
+    # only as an ingest-shape check (still validated/classified as "known"),
+    # never fed into the StatLine that gets scored.
+    "rush_fd",
+    "rec_fd",
     # --- Team-DST stats: confirmed live, DEF-position-only (verified via
     # psql cross-tab of position x key). Full DST scoring needs its own
     # dispatch (tier semantics for pts_allow_0 / yds_allow_0_100 are not
