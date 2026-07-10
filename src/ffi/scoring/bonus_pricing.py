@@ -3,8 +3,10 @@
 Weekly yardage Y ~ Gamma(shape k, scale theta) with k = 1/cv^2,
 theta = mean * cv^2 (so E[Y]=mean, SD/mean=cv). Gamma: positive support,
 right-skewed — matches weekly yardage shape far better than normal.
-CV per player from 2019-2025 weekly history (active weeks only), position
-fallback for thin histories. Calibrated on 2023-25 (see calibration report)."""
+CV per player from weekly history (active weeks only), position fallback
+for thin histories. CALIBRATION protocol fits CV on 2019-2022 (out-of-sample
+vs. 2023-25 eval, see calibration report); production use may fit on all
+available seasons via the `seasons` arg."""
 from scipy.stats import gamma as gamma_dist
 
 from ffi.scoring.config import BonusTier

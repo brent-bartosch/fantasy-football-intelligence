@@ -12,7 +12,8 @@ The launchd job `com.ffi.morning` runs the full morning pipeline each day at
 07:00 local time:
 
 ```
-ingest_sleeper.py --season 2026
+backup_db.sh
+  && ingest_sleeper.py --season 2026
   && ingest_fantasypros.py --daily
   && score_sleeper_projections.py
   && build_valuation.py
@@ -23,6 +24,10 @@ Each step is chained with `&&`, so if any upstream step fails, the briefing
 never runs and the launchd job's own exit code is nonzero — chain failures
 surface loudly instead of the briefing silently reporting on stale/partial
 data.
+
+The chain now starts with `backup_db.sh`, so a fresh `pg_dump` is taken every
+morning before ingest runs — the briefing's 2-day backup-freshness check is
+therefore self-satisfying as long as the daily job keeps running.
 
 ## Install
 
