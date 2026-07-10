@@ -3,11 +3,14 @@
 import datetime
 import pathlib
 
+from collections import defaultdict
+
 from ffi.db import connect
 from ffi.history.mining import (
     all_play,
     champion_value_split,
-    draft_slot_outcomes,
+    draft_position_outcomes,
+    franchise_slot_outcomes,
     position_round_tendencies,
     qb_timing_by_slot,
     trade_stats,
@@ -16,6 +19,48 @@ from ffi.history.mining import (
 
 conn = connect()
 today = datetime.date.today().isoformat()
+
+
+def _validate_draft_position_permutation(conn) -> None:
+    """Live guard: each season's round-1 pick_numbers must be a permutation of
+    1..12 (this league disallows pick trades, so they should always land as a
+    clean snake-draft assignment). Fail loud and name offending leagues/seasons
+    otherwise — do not silently tolerate a broken draft-order signal."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT dp.league_id, s.season, dp.pick_number
+            FROM draft_picks dp
+            JOIN teams t ON t.team_id = dp.team_id
+            JOIN raw.yahoo_league_settings s ON s.league_key = dp.league_id
+            WHERE dp.round_number = 1
+            """
+        )
+        rows = cur.fetchall()
+    by_league: dict = defaultdict(list)
+    seasons: dict = {}
+    for league_id, season, pick_number in rows:
+        by_league[league_id].append(pick_number)
+        seasons[league_id] = season
+    bad = {
+        f"{league_id} (season {seasons[league_id]})": sorted(picks)
+        for league_id, picks in by_league.items()
+        if sorted(picks) != list(range(1, 13))
+    }
+    if bad:
+        raise ValueError(
+            f"draft-position validation FAILED: {len(bad)} league-season(s) do "
+            f"not have a clean 1..12 round-1 pick_number permutation (possible "
+            f"traded picks despite the league's no-trade-picks rule): {bad}"
+        )
+    total = sum(len(v) for v in by_league.values())
+    print(
+        f"-> draft-position validation PASS: {len(by_league)} leagues, "
+        f"{total} round-1 picks, all clean 1..12 permutations"
+    )
+
+
+_validate_draft_position_permutation(conn)
 L = [
     f"# NAJEE league historical mining — {today}",
     "\n**Coverage:** drafts/standings/transactions/matchups 2010-2025 (16 seasons); "
@@ -43,14 +88,56 @@ L += [
 ]
 
 L += [
-    "\n## 1. Draft slot -> outcome (16 seasons)",
+    "\n## 1. Franchise slot -> outcome (persistent manager-seat quality; 16 seasons)",
+    "`teams.slot` is the stable Yahoo franchise/team seat, not the draft position — "
+    "snake-draft order varies every season (see section 1b for that). A franchise "
+    "slot can change hands between managers over the league's history (see "
+    "`manager_slot_annotations`, e.g. slot 12 = Brent from ~2022-present); this table "
+    "measures how strong a *seat* has been across whoever has held it, not any "
+    "draft-order advantage.",
     "| slot | seasons | avg finish | titles | avg PF |",
     "|---|---|---|---|---|",
 ]
-for r in draft_slot_outcomes(conn):
+for r in franchise_slot_outcomes(conn):
     L.append(
         f"| {r['slot']} | {r['seasons']} | {float(r['avg_finish']):.2f} | {r['titles']} | {float(r['avg_pf'] or 0):.0f} |"
     )
+
+dpo = draft_position_outcomes(conn)
+L += [
+    "\n## 1b. Draft position -> outcome (snake order, 16 seasons)",
+    "TRUE draft position: each team-season's round-1 `pick_number` "
+    "(`draft_picks WHERE round_number = 1`) — the actual snake-draft slot a team "
+    "drafted from that year, independent of its stable franchise seat. Validated: "
+    "192 team-seasons, exactly one round-1 pick each, live permutation check passed "
+    "(see script run log above).",
+    "| position | seasons | avg finish | titles | avg PF |",
+    "|---|---|---|---|---|",
+]
+for r in dpo:
+    L.append(
+        f"| {r['position']} | {r['seasons']} | {float(r['avg_finish']):.2f} | {r['titles']} | {float(r['avg_pf'] or 0):.0f} |"
+    )
+
+_first_half = [r for r in dpo if r["position"] <= 6]
+_second_half = [r for r in dpo if r["position"] > 6]
+_avg_first = sum(r["avg_finish"] for r in _first_half) / len(_first_half)
+_avg_second = sum(r["avg_finish"] for r in _second_half) / len(_second_half)
+_direction = (
+    "earlier draft positions finish better on average"
+    if _avg_first < _avg_second
+    else "later draft positions finish better on average"
+    if _avg_second < _avg_first
+    else "draft position shows no directional finish advantage either way"
+)
+L += [
+    f"\n**Cross-check (franchise slot vs true draft position):** positions 1-6 "
+    f"average a {_avg_first:.2f} finish vs {_avg_second:.2f} for positions 7-12 — "
+    f"{_direction}. This is the honest draft-order signal; the much larger spread "
+    f"seen in section 1 (franchise slot 8 at 4.88 vs slot 1 at 8.12) is manager-seat "
+    f"quality accumulated over 16 years, not a draft-position effect — those two "
+    f"tables should not be conflated.",
+]
 
 L += [
     "\n## 2. QB draft timing by slot (2QB fingerprint)",

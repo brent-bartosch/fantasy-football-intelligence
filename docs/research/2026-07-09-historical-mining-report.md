@@ -7,7 +7,8 @@
 ## Annotations on file
 - slot 12: Brent (2022-present)
 
-## 1. Draft slot -> outcome (16 seasons)
+## 1. Franchise slot -> outcome (persistent manager-seat quality; 16 seasons)
+`teams.slot` is the stable Yahoo franchise/team seat, not the draft position — snake-draft order varies every season (see section 1b for that). A franchise slot can change hands between managers over the league's history (see `manager_slot_annotations`, e.g. slot 12 = Brent from ~2022-present); this table measures how strong a *seat* has been across whoever has held it, not any draft-order advantage.
 | slot | seasons | avg finish | titles | avg PF |
 |---|---|---|---|---|
 | 1 | 16 | 8.12 | 0 | 2563 |
@@ -22,6 +23,25 @@
 | 10 | 16 | 6.81 | 2 | 2532 |
 | 11 | 16 | 7.94 | 1 | 2461 |
 | 12 | 16 | 7.31 | 0 | 2542 |
+
+## 1b. Draft position -> outcome (snake order, 16 seasons)
+TRUE draft position: each team-season's round-1 `pick_number` (`draft_picks WHERE round_number = 1`) — the actual snake-draft slot a team drafted from that year, independent of its stable franchise seat. Validated: 192 team-seasons, exactly one round-1 pick each, live permutation check passed (see script run log above).
+| position | seasons | avg finish | titles | avg PF |
+|---|---|---|---|---|
+| 1 | 16 | 5.12 | 2 | 2627 |
+| 2 | 16 | 7.25 | 0 | 2504 |
+| 3 | 16 | 6.00 | 1 | 2560 |
+| 4 | 16 | 6.12 | 3 | 2635 |
+| 5 | 16 | 7.75 | 1 | 2462 |
+| 6 | 16 | 5.88 | 2 | 2647 |
+| 7 | 16 | 6.94 | 2 | 2519 |
+| 8 | 16 | 8.19 | 0 | 2436 |
+| 9 | 16 | 5.88 | 2 | 2625 |
+| 10 | 16 | 6.19 | 0 | 2585 |
+| 11 | 16 | 5.81 | 0 | 2602 |
+| 12 | 16 | 6.88 | 3 | 2513 |
+
+**Cross-check (franchise slot vs true draft position):** positions 1-6 average a 6.35 finish vs 6.65 for positions 7-12 — earlier draft positions finish better on average. This is the honest draft-order signal; the much larger spread seen in section 1 (franchise slot 8 at 4.88 vs slot 1 at 8.12) is manager-seat quality accumulated over 16 years, not a draft-position effect — those two tables should not be conflated.
 
 ## 2. QB draft timing by slot (2QB fingerprint)
 | slot | QB1 round | QB2 round | QB3 round | seasons |

@@ -106,8 +106,12 @@ def all_play(conn) -> list[dict]:
     return out
 
 
-def draft_slot_outcomes(conn) -> list[dict]:
-    """Draft slot (1-12) -> avg final rank, championship count, all 16 seasons."""
+def franchise_slot_outcomes(conn) -> list[dict]:
+    """Franchise slot (1-12, the stable Yahoo team-seat, NOT draft order — see
+    manager_slot_annotations for which human held each slot over time) -> avg
+    final rank, championship count, all 16 seasons. This measures persistent
+    manager-seat quality, not draft-position advantage (snake order varies by
+    season — see draft_position_outcomes for that)."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -124,6 +128,80 @@ def draft_slot_outcomes(conn) -> list[dict]:
             dict(zip(("slot", "seasons", "avg_finish", "titles", "avg_pf"), r))
             for r in cur.fetchall()
         ]
+
+
+def draft_position_outcomes(conn) -> list[dict]:
+    """TRUE snake-draft position (1-12) -> avg final rank, championship count,
+    avg PF, seasons count, across all 16 seasons. A team-season's draft
+    position is its round-1 pick_number (round_number=1) — this is the actual
+    slot the team drafted from that year, which varies season to season
+    (unlike the stable franchise slot in franchise_slot_outcomes). Validates
+    exactly one round-1 pick per team-season (192 total) and fails loud
+    naming offenders otherwise."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT dp.league_id, dp.team_id, dp.pick_number
+            FROM draft_picks dp
+            JOIN teams t ON t.team_id = dp.team_id
+            JOIN raw.yahoo_league_settings s ON s.league_key = dp.league_id
+            WHERE dp.round_number = 1
+            """
+        )
+        rows = cur.fetchall()
+
+    by_team_season: dict = defaultdict(list)
+    for league_id, team_id, pick_number in rows:
+        by_team_season[(league_id, team_id)].append(pick_number)
+
+    offenders = {k: v for k, v in by_team_season.items() if len(v) != 1}
+    if offenders:
+        raise ValueError(
+            f"draft_position_outcomes: expected exactly one round-1 pick per "
+            f"team-season, found violations for {len(offenders)} team-season(s): "
+            f"{offenders}"
+        )
+    if len(by_team_season) != 192:
+        raise ValueError(
+            f"draft_position_outcomes: expected 192 team-seasons with a round-1 "
+            f"pick, found {len(by_team_season)}"
+        )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT dp.pick_number, t.final_rank, t.won_championship, t.total_points_scored
+            FROM draft_picks dp
+            JOIN teams t ON t.team_id = dp.team_id
+            JOIN raw.yahoo_league_settings s ON s.league_key = dp.league_id
+            WHERE dp.round_number = 1
+            """
+        )
+        detail = cur.fetchall()
+
+    agg: dict = defaultdict(
+        lambda: {"seasons": 0, "finishes": [], "titles": 0, "pfs": []}
+    )
+    for pick_number, final_rank, won_championship, total_points_scored in detail:
+        a = agg[pick_number]
+        a["seasons"] += 1
+        a["finishes"].append(final_rank)
+        a["titles"] += 1 if won_championship else 0
+        a["pfs"].append(total_points_scored)
+
+    out = []
+    for pos in sorted(agg):
+        a = agg[pos]
+        out.append(
+            {
+                "position": pos,
+                "seasons": a["seasons"],
+                "avg_finish": sum(a["finishes"]) / len(a["finishes"]),
+                "titles": a["titles"],
+                "avg_pf": sum(a["pfs"]) / len(a["pfs"]) if a["pfs"] else 0,
+            }
+        )
+    return out
 
 
 def position_round_tendencies(conn) -> list[dict]:
