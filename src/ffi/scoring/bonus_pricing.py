@@ -13,16 +13,18 @@ from ffi.scoring.config import BonusTier
 
 
 def weekly_threshold_prob(mean_weekly: float, cv: float, threshold: float) -> float:
-    if mean_weekly <= 0:
-        return 0.0
     if cv <= 0:
         raise ValueError(f"cv must be positive, got {cv}")
+    if mean_weekly <= 0:
+        return 0.0
     k = 1.0 / (cv * cv)
     theta = mean_weekly * cv * cv
     return float(gamma_dist.sf(threshold, a=k, scale=theta))
 
 
 def bonus_ev_per_week(mean_weekly: float, cv: float, tiers: list[BonusTier]) -> float:
+    if cv <= 0:
+        raise ValueError(f"cv must be positive, got {cv}")
     if mean_weekly <= 0:
         return 0.0
     return sum(

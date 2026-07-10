@@ -38,7 +38,7 @@ with conn.cursor() as cur:
         WHERE pp.source = 'sleeper' AND pp.horizon = 'season'
           AND pp.config_version = %s
           AND pp.snapshot_id = (SELECT max(snapshot_id) FROM raw.sleeper_projections WHERE week IS NULL)
-          AND x.position IN ('QB','RB','WR','TE','K')
+          AND x.position IN ('QB','RB','WR','TE','K','PK')
         ORDER BY pp.points DESC
         """,
         (cfg.version,),
@@ -51,8 +51,12 @@ if not rows:
 
 # NOTE: DEF valuation deliberately absent from v1 board values — Task 12 answers
 # draft-vs-stream for DEF/K first; K included for completeness.
+# Kickers are position 'PK' in public.player_id_xwalk; normalize to 'K' so
+# they land in the K pool instead of being silently dropped (Phase 3 Task 2 —
+# K had zero valuation rows before this fix).
 by_pos: dict[str, list] = {}
 for xid, pos, name, pts, snap in rows:
+    pos = "K" if pos == "PK" else pos
     by_pos.setdefault(pos, []).append((xid, name, pts))
 
 fp_std = {}
@@ -81,19 +85,18 @@ print(
 snapshot_id = rows[0][4]
 with conn.cursor() as cur:
     for scen_name, scen in SCENARIOS.items():
-        # Idempotent re-run: clear any prior rows for this (config_version,
-        # scenario, snapshot_id) combo before inserting fresh ones.
+        # Idempotent re-run: valuation is the CURRENT view (history is
+        # recomputable from raw), so each rebuild fully replaces the
+        # (config, scenario) slice regardless of snapshot_id — keying the
+        # DELETE on snapshot_id let rows from earlier snapshots stack up as
+        # the nightly chain advanced snapshots (Phase 3 Task 2 duplicate fix).
         cur.execute(
-            """DELETE FROM valuation.replacement_baseline
-               WHERE config_version=%s AND scenario=%s
-                 AND (params->>'snapshot_id')::int = %s""",
-            (cfg.version, scen_name, snapshot_id),
+            "DELETE FROM valuation.replacement_baseline WHERE config_version=%s AND scenario=%s",
+            (cfg.version, scen_name),
         )
         cur.execute(
-            """DELETE FROM valuation.player_value
-               WHERE config_version=%s AND scenario=%s
-                 AND (params->>'snapshot_id')::int = %s""",
-            (cfg.version, scen_name, snapshot_id),
+            "DELETE FROM valuation.player_value WHERE config_version=%s AND scenario=%s",
+            (cfg.version, scen_name),
         )
 
         ranks = compute_replacement_ranks(scen)
@@ -143,6 +146,27 @@ with conn.cursor() as cur:
                     ),
                 )
 conn.commit()
+
+# Post-build assertions (fail-loud): no stacked (player, scenario) duplicates,
+# and the PK->K mapping actually landed rows in the K pool.
+with conn.cursor() as cur:
+    cur.execute(
+        """SELECT count(*) FROM (SELECT xwalk_id, scenario FROM valuation.player_value
+           WHERE config_version=%s GROUP BY 1,2 HAVING count(*) > 1) d""",
+        (cfg.version,),
+    )
+    dups = cur.fetchone()[0]
+    if dups:
+        raise SystemExit(
+            f"valuation.player_value has {dups} duplicated (player, scenario) rows after rebuild"
+        )
+    cur.execute(
+        "SELECT count(*) FROM valuation.player_value WHERE config_version=%s AND position='K' AND scenario='qb_hoard_12'",
+        (cfg.version,),
+    )
+    if cur.fetchone()[0] < 20:
+        raise SystemExit("K missing from valuation — PK mapping regressed")
+
 with conn.cursor() as cur:
     cur.execute(
         """SELECT v.scenario, x.name, v.position, round(v.vorp,1)

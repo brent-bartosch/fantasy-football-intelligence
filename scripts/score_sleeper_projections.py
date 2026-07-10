@@ -3,13 +3,16 @@
 scoring.projection_points. Default: the latest season-level snapshot."""
 import argparse
 import json
+from decimal import Decimal
 
 import psycopg2.extras
 
 from ffi.db import connect
+from ffi.scoring.bonus_pricing import estimate_weekly_cv
 from ffi.scoring.config import ensure_config_in_db, load_config_v1
 from ffi.scoring.engine import score_components
 from ffi.scoring.fd_impute import fit_fd_rates, impute_fd
+from ffi.scoring.projection_bonus import season_bonus_ev
 from ffi.scoring.sleeper_adapter import stat_line_from_sleeper
 
 # FD-imputing positions: rush/rec first downs are only meaningfully modeled
@@ -59,6 +62,7 @@ with conn.cursor() as cur:
     sleeper_to_gsis = dict(cur.fetchall())
 
 fd_rates = fit_fd_rates(conn, seasons=_FD_FIT_SEASONS)
+cv = estimate_weekly_cv(conn, seasons=_FD_FIT_SEASONS)
 
 horizon = "season" if week is None else f"week:{week}"
 out = []
@@ -67,6 +71,7 @@ for rec in payload:
     pos = (rec.get("player") or {}).get("position")
     line = stat_line_from_sleeper(rec)
     fd_source = None
+    gsis_id = None
     if pos in _FD_IMPUTED_POSITIONS:
         gsis_id = sleeper_to_gsis.get(str(rec["player_id"]))
         imputed = impute_fd(
@@ -86,10 +91,18 @@ for rec in payload:
         )
         fd_source = "imputed"
     comps = score_components(line, cfg)
+    bonus_model = None
+    if week is None and pos in _FD_IMPUTED_POSITIONS:
+        comps["bonuses"] = Decimal(
+            repr(round(season_bonus_ev(line, cfg, cv, pos, gsis_id), 4))
+        )
+        bonus_model = "weekly_gamma_v1"
     points = sum(comps.values())
     comps_out = {k: str(v) for k, v in comps.items()}
     if fd_source is not None:
         comps_out["fd_source"] = fd_source
+    if bonus_model:
+        comps_out["bonus_model"] = bonus_model
     out.append(
         (
             "sleeper",
