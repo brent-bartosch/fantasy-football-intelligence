@@ -30,7 +30,8 @@ def db():
         tables = [f"{s}.{t}" for s, t in cur.fetchall()]
         cur.execute(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE")
         cur.execute(
-            "TRUNCATE public.player_id_xwalk, public.matchup_results RESTART IDENTITY CASCADE"
+            "TRUNCATE public.player_id_xwalk, public.matchup_results, "
+            "public.manager_slot_annotations, public.leagues RESTART IDENTITY CASCADE"
         )
         cur.execute("TRUNCATE players CASCADE")
     conn.commit()
