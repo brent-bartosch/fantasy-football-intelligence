@@ -12,6 +12,12 @@ FIXTURE = json.loads(
 
 
 class FixtureIngester(SleeperProjectionsIngester):
+    # The live default floors (MIN_PROJECTED) assume a full-season payload
+    # (hundreds of records/position). FIXTURE has 2 records total, so the
+    # existing ratio/FD tests below need the population-collapse floor
+    # disabled to isolate what they're actually testing.
+    MIN_PROJECTED = {"QB": 0, "RB": 0, "WR": 0, "TE": 0}
+
     def fetch(self):
         return FIXTURE
 
@@ -65,6 +71,50 @@ def test_validate_passes_when_records_lack_player_position():
     ]
     ing = FixtureIngester(season=2025, week=None)
     assert ing.validate(payload) == 3
+
+
+def test_validate_fails_when_meaningfully_projected_population_collapses():
+    # R5: the ratio guard's denominator is "meaningfully projected" records —
+    # if only a handful of records carry real stats (rest are ADP-only
+    # metadata), the ratio can still read 100% and pass even though the
+    # population has collapsed. Uses the LIVE default MIN_PROJECTED (QB: 60)
+    # to exercise the real floor, not a test override.
+    payload = []
+    for i in range(10):
+        payload.append(
+            {
+                "player_id": f"real-{i}",
+                "player": {"position": "QB"},
+                "stats": {"pass_cmp": 20.0, "pass_yd": 250.0},
+            }
+        )
+    for i in range(490):
+        payload.append(
+            {
+                "player_id": f"adp-{i}",
+                "player": {"position": "QB"},
+                "stats": {"adp_std": 150.0 + i, "gp": 16},
+            }
+        )
+    ing = SleeperProjectionsIngester(season=2025, week=None)
+    with pytest.raises(IngestError, match="collapsed"):
+        ing.validate(payload)
+
+
+def test_validate_fails_when_position_has_zero_meaningfully_projected_records():
+    # total==0: every QB record is ADP-only metadata, so the ratio guard's
+    # `if total` short-circuit skips it entirely — the floor must still trip.
+    payload = [
+        {
+            "player_id": f"adp-{i}",
+            "player": {"position": "QB"},
+            "stats": {"adp_std": 100.0 + i, "gp": 16},
+        }
+        for i in range(5)
+    ]
+    ing = SleeperProjectionsIngester(season=2025, week=None)
+    with pytest.raises(IngestError, match="collapsed"):
+        ing.validate(payload)
 
 
 def test_validate_fails_on_empty_payload():

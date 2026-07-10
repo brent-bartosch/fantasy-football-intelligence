@@ -72,6 +72,23 @@ class SleeperProjectionsIngester(BaseIngester):
             return True
         return False
 
+    # R5 finding: the ratio guard above (with_volume/total) shares its
+    # denominator with its numerator — both count "meaningfully projected"
+    # records. If a volume key vanishes from the payload entirely, the
+    # denominator shrinks right along with the numerator, so the ratio can
+    # still read 100% and pass; at total==0 the ratio check's `if total`
+    # short-circuits and skips validation altogether. The guard goes silent
+    # exactly when the data is most degraded. This floor is independent of
+    # the ratio: it bounds the meaningfully-projected population itself
+    # against an absolute size, so a population collapse trips even when the
+    # ratio can't see it. Live-verified 2026-07-09 season-level
+    # meaningfully-projected totals: QB 279, RB 536 (WR/TE higher still) —
+    # floors are set to ~1/4 of observed so legitimate off-season thinning
+    # never trips this, but a population collapse does. Class attribute (not
+    # a constant) so tests with small fixtures can override it; the live
+    # default below is what production ingestion actually runs with.
+    MIN_PROJECTED = {"QB": 60, "RB": 120, "WR": 150, "TE": 60}
+
     def __init__(self, season: int, week: int | None):
         self.season = season
         self.week = week
@@ -104,16 +121,30 @@ class SleeperProjectionsIngester(BaseIngester):
                     counts[pos][0] += 1
                 if self._FD_BY_POSITION[pos] in rec["stats"]:
                     counts[pos][1] += 1
+        totals = {pos: c[2] for pos, c in counts.items()}
         for pos, (with_volume, with_fd, total) in counts.items():
             if total and with_volume / total < 0.5:
                 raise IngestError(
                     f"sleeper: {self._VOLUME_BY_POSITION[pos]} present in only "
                     f"{with_volume}/{total} {pos} records — partial volume drift breaks "
-                    f"FD imputation and scoring (design 4.2/R5, post-R16 amendment)."
+                    f"FD imputation and scoring (design 4.2/R5, post-R16 amendment). "
+                    f"Current per-position meaningfully-projected totals: {totals}."
                 )
             if total and with_fd / total < 0.5:
                 log.warning(
                     "sleeper.fd_coverage", position=pos, with_fd=with_fd, total=total
+                )
+        # See MIN_PROJECTED docstring above the class attribute: this catches
+        # exactly the case the ratio guard above can't — a collapsed
+        # meaningfully-projected population where the ratio still reads 100%
+        # (or total==0, which the ratio guard skips outright).
+        for pos, (with_volume, with_fd, total) in counts.items():
+            floor = self.MIN_PROJECTED.get(pos, 0)
+            if total < floor:
+                raise IngestError(
+                    f"sleeper: {pos} meaningfully-projected population collapsed — "
+                    f"{total} records (floor {floor}) — upstream drift (R5). "
+                    f"Current per-position meaningfully-projected totals: {totals}."
                 )
         return len(payload)
 
