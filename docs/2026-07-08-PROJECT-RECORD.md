@@ -184,3 +184,22 @@ Phase 1 (Foundation & Data Revival) executed via subagent-driven development —
 ## 14. Current status
 
 Design doc committed. Risk register + ADR reviewed and **accepted with fixes applied** (2026-07-09): R16 methodology-error risk added; R4 impact raised to I6; Domain 1 poll thresholds tightened for the 90-second clock (1 failure → POLL-DEGRADED, 999 → immediate MANUAL); Domain 2 migration path decided (named Postgres schemas; `public` = core layer, crosswalk in `public`); Domain 6 committed to `uv`. Reviewer's nice-to-fixes (agent-latency risk, browser-profile gitignore, sim-log volume policy, scoring purity test, restore test at week 3, ADR preamble) deferred to the implementation plan. Verified codebase-context gaps for the plan to front-load: legacy import created placeholder players (`Player {key}`, TBD pos/team); legacy stat map covers only 11 basic stat IDs (none of the exotic scoring); legacy assistant/adjuster hardcode 14 teams — effectively all v1 analytical code is dead. Next: `superpowers:writing-plans` → implementation plan → week-1 infrastructure revival.
+
+## 13c. Addendum (2026-07-10): Phase 2 executed and merged
+
+Phase 2 (Scoring Engine, Valuation & Historical Mining) executed subagent-driven — 16 tasks, per-task review gates, final whole-branch review "ready to merge with fixes" (applied), fast-forward merged to `main` at `e8975eb`. 158/158 tests; health gate extended to 20/20.
+
+**Golden gate (R1):** engine reproduces Yahoo's official 2025 points EXACTLY — 4,658/4,658 player-weeks (incl. backfilled full DEF/K pools), 39 committed fixtures, one evidence-pinned payload-gap exception (Aubrey wk15 fake-FG rush: Yahoo's position-scoped K payload omits cross-category stats; diff = exactly 1.93, nflverse-verified; pin fails loud on drift). Cumulative bonus stacking verified empirically before any code. Week-3 checkpoint (R3) satisfied at Task 5.
+
+**R16 catches (the methodology risk paid for itself):**
+- **Sleeper native FD projections are ~2x inflated** vs nflverse ground truth (impossible fd>volume in 53–96% of pairs). Design amendment: imputed FD (nflverse-fitted, EB-shrunk) is THE FD source for all projection scoring; native FD rejected with evidence, downgraded to monitored-only at ingest (volume keys + population floors are the hard guard).
+- **Gamma bonus pricing calibrated:** Brier 0.0212 vs 0.0259 mean-pricing on 48k out-of-sample obs.
+- **QB-hoarding sensitivity is LOAD-BEARING:** QB baseline 476 pts @QB24 vs 73 @QB36 (pool cliffs past real starters); top-24 board overlap only 10/24 between no-hoard and hoard scenarios (hoard_12 vs 24 robust at 24/24). Phase 3 simulator must adjudicate the real QB policy; QB-cohort input elevated.
+
+**Strategic verdicts (docs/research/):** DEF **DRAFT EARLY** (+6.96 pts/wk over realistic streamer under enhanced DEF scoring ≈ +97.5/season); K **DRAFT EARLY** (+4.07 ≈ +57/season) — inverts generic streaming wisdom (1 season, hindsight-upper-bound caveats stated). Mining (16 seasons): true draft position worth only ~0.3 avg-finish ranks, but FRANCHISE SLOT spread is 3.24 ranks (persistent manager skill — opponent-model gold); QB1 goes round 1.83 league-wide; champions ~3.3k drafted + ~1.1k added pts (2019–25).
+
+**Constraints discovered:** FP public key tier hard-caps responses at 10 players/position → FP = elite overlay only (~9/30 daily calls used); ADR D6 page-export fallback is the path if full ECR ever needed. Sleeper DST projection tier semantics deferred (DEF prices ~0 from Sleeper) — carry-forward.
+
+**Infrastructure live:** morning launchd chain (backup → sleeper ingest → FP sync → score → valuation → briefing), health-first briefing exits nonzero on red; pg_restore drill executed (2.17s, 6/6 counts). Data: draft_picks fully team-attributed (3,720), matchup_results 2,994 team-weeks, crosswalk 97.6% (101 rookie overrides).
+
+**Phase 3 carry-forward:** Sleeper DST tier-semantics task; RequestException→YahooAuthError test; jsonb-canonical compare + RangeTier order validator before any config v2; fixture ORDER BY tiebreaker at regeneration; gmm guard-branch tests; PG_BIN eval alignment next drill. Pending user inputs unchanged: slot-turnover annotation (now higher-value given the franchise-slot finding), QB cohort material (elevated by baseline sensitivity), 2026 draft date, league renewal (R8 re-audit trigger armed).
