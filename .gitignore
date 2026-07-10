@@ -50,6 +50,8 @@ logs/
 data/*.csv
 data/*.json
 data/*.xlsx
+# ...but curated config (not bulk data) is tracked:
+!data/backtest_name_overrides.json
 
 # Temporary files
 tmp/
