@@ -28,6 +28,7 @@ COLUMN_MAP: list[tuple[str, str]] = [
     ("receiving_first_downs", "receiving_first_downs"),
     ("punt_return_yards", "punt_return_yards"),
     ("kickoff_return_yards", "kickoff_return_yards"),
+    ("special_teams_tds", "special_teams_tds"),
 ]
 # db_col -> source columns summed (fill_null(0) inside the sum only).
 DERIVED_SUMS: dict[str, list[str]] = {
@@ -35,6 +36,12 @@ DERIVED_SUMS: dict[str, list[str]] = {
         "rushing_fumbles_lost",
         "receiving_fumbles_lost",
         "sack_fumbles_lost",
+    ],
+    "fumbles": ["rushing_fumbles", "receiving_fumbles", "sack_fumbles"],
+    "two_point_conversions": [
+        "passing_2pt_conversions",
+        "rushing_2pt_conversions",
+        "receiving_2pt_conversions",
     ],
 }
 

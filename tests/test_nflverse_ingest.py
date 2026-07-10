@@ -1,7 +1,12 @@
 import polars as pl
 import pytest
 from ffi.ingest.base import IngestError
-from ffi.ingest.nflverse import NflversePlayerWeekIngester, REQUIRED_COLS
+from ffi.ingest.nflverse import (
+    COLUMN_MAP,
+    DERIVED_SUMS,
+    NflversePlayerWeekIngester,
+    REQUIRED_COLS,
+)
 
 
 def _frame(cols):
@@ -52,8 +57,9 @@ def test_derive_rows_sums_fumbles_lost_treating_nulls_as_zero():
     )
     rows = ing._derive_rows(df)
     assert len(rows) == 1
-    # fumbles_lost is the last column in the insert order
-    assert rows[0][-1] == 3
+    db_cols = [db for _, db in COLUMN_MAP] + list(DERIVED_SUMS)
+    row = dict(zip(db_cols, rows[0]))
+    assert row["fumbles_lost"] == 3
 
 
 def test_derive_rows_drops_null_player_id_row_with_all_empty_stats():
@@ -74,3 +80,28 @@ def test_derive_rows_raises_on_null_player_id_row_with_nonzero_stats():
     df = _row_frame([{"player_id": None, "rushing_yards": 5}])
     with pytest.raises(IngestError, match="1 rows"):
         ing._derive_rows(df)
+
+
+def test_derive_rows_sums_fumbles_and_two_point_conversions_and_maps_special_teams_tds():
+    ing = NflversePlayerWeekIngester(seasons=[2024])
+    df = _row_frame(
+        [
+            {
+                "player_id": "00-0000001",
+                "rushing_fumbles": 1,
+                "receiving_fumbles": None,
+                "sack_fumbles": 1,
+                "passing_2pt_conversions": 1,
+                "rushing_2pt_conversions": None,
+                "receiving_2pt_conversions": 1,
+                "special_teams_tds": 2,
+            }
+        ]
+    )
+    rows = ing._derive_rows(df)
+    assert len(rows) == 1
+    db_cols = [db for _, db in COLUMN_MAP] + list(DERIVED_SUMS)
+    row = dict(zip(db_cols, rows[0]))
+    assert row["special_teams_tds"] == 2
+    assert row["fumbles"] == 2
+    assert row["two_point_conversions"] == 2
