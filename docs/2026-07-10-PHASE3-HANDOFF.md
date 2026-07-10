@@ -8,7 +8,7 @@
 3. `docs/superpowers/risks/2026-07-08-draft-intelligence-risks.md` — **R7** (sim-to-reality transfer — Phase 3 owns its mitigations), **R11** (backtest inputs unobtainable — sourcing attempt due this phase), R3 (critical path), R4 residual.
 4. `docs/superpowers/risks/2026-07-08-draft-intelligence-adr.md` — Domain 7 (backtests as regression suite; property tests), Domain 5 (sim-farm nightly adversarial report carries its own data-vintage line), Domain 8 (sim-log volume policy: results → `sim` schema tables, logs errors-only).
 5. `docs/research/2026-07-09-historical-mining-report.md` — the opponent-model priors live here (franchise-slot tendencies, QB timing by slot, transaction/trade patterns).
-6. `docs/research/2026-07-09-baseline-sensitivity.md` + `2026-07-09-def-k-streaming-baseline.md` — the two strategy questions the simulator must adjudicate (QB policy; DEF/K draft-early verdicts to encode as board policy knobs).
+6. `docs/research/2026-07-09-baseline-sensitivity.md` + `2026-07-09-def-k-streaming-baseline.md` — the two strategy questions FROM RESEARCH the simulator must adjudicate (QB policy; DEF/K draft-early verdicts). §3.3's knob grid adds two simulator-native knobs on top (tier-break rules, positional caps) — nothing is missing.
 7. `.superpowers/sdd/phase2-progress.md` — Phase 2 execution ledger (per-task outcomes, deferred Minors, final-review triage).
 
 ## 1. Process contract
@@ -38,7 +38,7 @@ Fold into the plan's first tasks:
 
 - **Valuation is live**: `valuation.player_value` (scenarios qb_hoard_0/12/24) + `valuation.replacement_baseline`; GMM tiers per position; rebuild via `scripts/build_valuation.py` (idempotent per snapshot). The hoarding scenarios are INPUTS to the simulator, not answers.
 - **Imputed FD is the universal projection FD source** (Sleeper native FD ~2x inflated — never map it back). `ffi/scoring/fd_impute.py`; wired in `scripts/score_sleeper_projections.py`.
-- **Bonus pricing** (`ffi/scoring/bonus_pricing.py`, gamma, calibrated) exists but is NOT yet wired into valuation points — a candidate Phase 3 refinement: season-total scoring understates weekly threshold-bonus EV; decide deliberately whether sim roster-scoring uses it.
+- **Bonus pricing** (`ffi/scoring/bonus_pricing.py`, gamma, calibrated) exists but is NOT yet wired into valuation points — a candidate Phase 3 refinement: season-total scoring understates weekly threshold-bonus EV; decide deliberately whether sim roster-scoring uses it. Known gap to fix FIRST if wired in: `weekly_threshold_prob` short-circuits on mean≤0 before validating cv (Phase 2 Task 9 accepted Minor) — harmless while callers pre-filter via SQL `HAVING avg > 0`, load-bearing the moment the sim calls it with arbitrary inputs.
 - **Historical league-scoring points**: `scoring.player_week_points` — nflverse 2019–2025 (129,657) for backtests/roster-scoring; yahoo_engine 2025 (4,658, exact) as ground truth. Known gaps: pick-sixes absent from nflverse (−4, rare); one pinned Yahoo payload-gap (Aubrey wk15, diff exactly 1.93).
 - **History tables**: `teams` (192, slot+team_key), `draft_picks` fully team-attributed, `public.matchup_results` (2,994; playoff weeks legitimately shrink — 33 accepted shortfall weeks), `manager_slot_annotations` (only slot 12 seeded).
 - **Mining findings for opponent models**: franchise-slot skill spread 3.24 avg-finish ranks (vs ~0.3 for true draft position); QB1 goes round ~1.83 league-wide with slot-level variance in QB2/QB3 timing; trades rare (~/season count in report); transaction timing curves in the report.
@@ -58,6 +58,7 @@ Fold into the plan's first tasks:
 - **Yahoo:** all calls via `ffi.yahoo_client.yahoo_call` (2s throttle); 999 = YahooRateLimitError = stop everything. Phase 3 needs near-zero Yahoo API work — keep it that way.
 - **Sleeper ingest guard**: volume keys (pass_cmp/rush_att/rec) are the hard gate with per-position population floors {QB60/RB120/WR150/TE60}; FD presence is monitored-only. Off-season payloads have ~75–85% ADP-only placeholder records per position — expected, filtered by "meaningfully-projected" logic.
 - **`players.yahoo_player_id` is one row per game-code** — always join via `public.v_player_yahoo_ids`; crosswalk 97.6% with manual-override precedence + loud quarantine for upstream dup-ids.
+- **`manager_slot_annotations` is excluded from the test-teardown sweep** (Phase 2 Task 3 accepted Minor — the migration seeds it idempotently). Phase 3 touches this table (pending input #1 lands here): the first test that WRITES to it must add it to conftest's teardown or tests will leak state.
 - **Sim outputs go to the `sim` schema** (exists since migration 001, empty); per ADR D8: results in tables, logs errors-only (sim farms generate volume).
 - **Backups nightly via the launchd chain** (gzipped plain SQL, `PG_BIN` v15 pin — PATH has v14); restore drill proven 2.17s (`docs/runbooks/pg-restore-drill.md`).
 - **Week-6 feature freeze stands** (~1 week before the mid-August draft): Phase 3 has weeks 3–4; Phase 4 (assistant + rehearsal ladder 1–3) needs weeks 4–5 — do not let sim-farm tuning eat the assistant's runway (R3).
