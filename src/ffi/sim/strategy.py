@@ -149,107 +149,156 @@ def _pick_best(scored: list) -> PoolPlayer:
     return min(scored, key=key)[1]
 
 
+def _validate_params(params: StrategyParams) -> None:
+    if len(params.qb_not_before) < len(params.qb_by_round):
+        raise ValueError(
+            f"qb_not_before (len {len(params.qb_not_before)}) is shorter than "
+            f"qb_by_round (len {len(params.qb_by_round)}) -- can't gate every "
+            "planned QB"
+        )
+
+
+def rule4_candidates(
+    avail_by_pos: dict,
+    round_: int,
+    counts: dict,
+    picks_left_after: int,
+    params: StrategyParams,
+) -> list:
+    """Rule 4's full scored candidate list: `(score, PoolPlayer)` pairs, one
+    per feasible/under-cap/in-window candidate, gated exactly as rule 4's
+    argmax gates them (`qb_not_before`/`qb_tier_targets`/`defk_round`/caps/
+    feasibility). Extracted as a public helper (Phase 4 Task 12) so
+    `evaluate_rules`'s rule 4 branch and `ffi.draft.recommend`'s `top`/
+    `by_position` views share one gating implementation and can never drift
+    apart -- `recommend` needs the same "legal rule-4 candidates" set for its
+    informational board view even on turns where a force rule (1-3) decides
+    the actual pick."""
+    caps = dict(params.caps)
+    qb_n = counts.get("QB", 0)
+    scored = []
+    for pos in POSITIONS:
+        if pos == "QB" and counts.get("QB", 0) >= len(params.qb_by_round):
+            continue
+        if (
+            pos == "QB"
+            and qb_n < len(params.qb_not_before)
+            and round_ < params.qb_not_before[qb_n]
+        ):
+            continue
+        if pos in ("DEF", "K") and round_ < params.defk_round:
+            continue
+        if counts.get(pos, 0) >= caps.get(pos, float("inf")):
+            continue
+        if not feasible(counts, pos, picks_left_after):
+            continue
+        cands = avail_by_pos.get(pos) or []
+        if not cands:
+            continue
+        # `_is_last_in_tier` (via `_score`) is computed against `cands`, so
+        # for QB it must still see the position's FULL available list -- the
+        # tier filter below narrows *candidacy*, not tier-closure math --
+        # hence it's applied to a separate `filtered` view.
+        filtered = cands
+        if pos == "QB" and qb_n < len(params.qb_tier_targets):
+            max_tier = params.qb_tier_targets[qb_n]
+            filtered = [c for c in cands if c.tier <= max_tier]
+            if not filtered:
+                continue
+        for c in filtered[:CAND_WINDOW]:
+            scored.append((_score(c, cands, params.tier_break_bonus), c))
+    return scored
+
+
+def evaluate_rules(
+    avail_by_pos: dict,
+    round_: int,
+    counts: dict,
+    picks_left_after: int,
+    params: StrategyParams,
+) -> tuple:
+    """Pure rule cascade (see module docstring for the four rules in order,
+    checked in order every call). Returns `(pick, rule)` with `rule` in
+    `{"feasibility","qb_deadline","defk","value"}`.
+
+    Extracted (Phase 4 Task 12) so `ffi.draft.recommend` can call the exact
+    same cascade `make_strategy_fn`'s closure calls -- `make_strategy_fn`
+    becomes a thin wrapper returning `evaluate_rules(...)[0]`, so the
+    assistant's #1 answer is always, by construction, this function's
+    result, never a second implementation."""
+    caps = dict(params.caps)
+
+    # 1. Feasibility force.
+    if required_picks(counts) == picks_left_after:
+        scored = []
+        for pos in _unmet_positions(counts):
+            cands = avail_by_pos.get(pos) or []
+            if not cands:
+                continue
+            for c in cands[:CAND_WINDOW]:
+                scored.append((_score(c, cands, params.tier_break_bonus), c))
+        if scored:
+            return _pick_best(scored), "feasibility"
+        # No available candidate at any unmet position -- an unexpected
+        # state in a well-formed draft, but falling through to try the
+        # remaining rules is strictly safer than raising here (rule 4's
+        # own feasibility checks still guard against an illegal return).
+
+    # 2. QB deadline force -- only the smallest still-unmet n.
+    qb_n = counts.get("QB", 0)
+    for n in range(qb_n + 1, len(params.qb_by_round) + 1):
+        if round_ >= params.qb_by_round[n - 1]:
+            cands = avail_by_pos.get("QB") or []
+            if (
+                cands
+                and qb_n < caps.get("QB", float("inf"))
+                and feasible(counts, "QB", picks_left_after)
+            ):
+                return (
+                    _pick_best([(c.vorp, c) for c in cands[:CAND_WINDOW]]),
+                    "qb_deadline",
+                )
+            break  # don't try a later (larger) n's deadline this call
+
+    # 3. DEF/K force.
+    if (
+        round_ >= params.defk_round
+        and counts.get("DEF", 0) == 0
+        and counts.get("DEF", 0) < caps.get("DEF", float("inf"))
+    ):
+        cands = avail_by_pos.get("DEF") or []
+        if cands and feasible(counts, "DEF", picks_left_after):
+            return _pick_best([(c.vorp, c) for c in cands[:CAND_WINDOW]]), "defk"
+    if (
+        round_ >= params.defk_round + 1
+        and counts.get("K", 0) == 0
+        and counts.get("K", 0) < caps.get("K", float("inf"))
+    ):
+        cands = avail_by_pos.get("K") or []
+        if cands and feasible(counts, "K", picks_left_after):
+            return _pick_best([(c.vorp, c) for c in cands[:CAND_WINDOW]]), "defk"
+
+    # 4. Otherwise: feasible, under-cap, in-window candidates, argmax score.
+    scored = rule4_candidates(avail_by_pos, round_, counts, picks_left_after, params)
+    if not scored:
+        raise ValueError(
+            f"evaluate_rules: no feasible/under-cap/in-window candidate "
+            f"at round {round_} (counts={counts}, "
+            f"picks_left_after={picks_left_after})"
+        )
+    return _pick_best(scored), "value"
+
+
 def make_strategy_fn(params: StrategyParams) -> PickFn:
     """Build a `PickFn` (see `ffi.sim.draft.PickFn`) implementing the
     decision order documented in this module's docstring for the given
-    `params`."""
-    if len(params.qb_not_before) < len(params.qb_by_round):
-        raise ValueError(
-            f"make_strategy_fn: qb_not_before (len {len(params.qb_not_before)}) is "
-            f"shorter than qb_by_round (len {len(params.qb_by_round)}) -- can't gate "
-            "every planned QB"
-        )
-    caps = dict(params.caps)
+    `params`. A thin closure around `evaluate_rules` -- see that function's
+    docstring for the pinned-equal-to-the-assistant's-primary contract."""
+    _validate_params(params)
 
     def strategy_fn(
         avail_by_pos: dict, round_: int, counts: dict, picks_left_after: int
     ) -> PoolPlayer:
-        # 1. Feasibility force.
-        if required_picks(counts) == picks_left_after:
-            scored = []
-            for pos in _unmet_positions(counts):
-                cands = avail_by_pos.get(pos) or []
-                if not cands:
-                    continue
-                for c in cands[:CAND_WINDOW]:
-                    scored.append((_score(c, cands, params.tier_break_bonus), c))
-            if scored:
-                return _pick_best(scored)
-            # No available candidate at any unmet position -- an unexpected
-            # state in a well-formed draft, but falling through to try the
-            # remaining rules is strictly safer than raising here (rule 4's
-            # own feasibility checks still guard against an illegal return).
-
-        # 2. QB deadline force -- only the smallest still-unmet n.
-        qb_n = counts.get("QB", 0)
-        for n in range(qb_n + 1, len(params.qb_by_round) + 1):
-            if round_ >= params.qb_by_round[n - 1]:
-                cands = avail_by_pos.get("QB") or []
-                if (
-                    cands
-                    and qb_n < caps.get("QB", float("inf"))
-                    and feasible(counts, "QB", picks_left_after)
-                ):
-                    return _pick_best([(c.vorp, c) for c in cands[:CAND_WINDOW]])
-                break  # don't try a later (larger) n's deadline this call
-
-        # 3. DEF/K force.
-        if (
-            round_ >= params.defk_round
-            and counts.get("DEF", 0) == 0
-            and counts.get("DEF", 0) < caps.get("DEF", float("inf"))
-        ):
-            cands = avail_by_pos.get("DEF") or []
-            if cands and feasible(counts, "DEF", picks_left_after):
-                return _pick_best([(c.vorp, c) for c in cands[:CAND_WINDOW]])
-        if (
-            round_ >= params.defk_round + 1
-            and counts.get("K", 0) == 0
-            and counts.get("K", 0) < caps.get("K", float("inf"))
-        ):
-            cands = avail_by_pos.get("K") or []
-            if cands and feasible(counts, "K", picks_left_after):
-                return _pick_best([(c.vorp, c) for c in cands[:CAND_WINDOW]])
-
-        # 4. Otherwise: feasible, under-cap, in-window candidates, argmax score.
-        scored = []
-        for pos in POSITIONS:
-            if pos == "QB" and counts.get("QB", 0) >= len(params.qb_by_round):
-                continue
-            if (
-                pos == "QB"
-                and qb_n < len(params.qb_not_before)
-                and round_ < params.qb_not_before[qb_n]
-            ):
-                continue
-            if pos in ("DEF", "K") and round_ < params.defk_round:
-                continue
-            if counts.get(pos, 0) >= caps.get(pos, float("inf")):
-                continue
-            if not feasible(counts, pos, picks_left_after):
-                continue
-            cands = avail_by_pos.get(pos) or []
-            if not cands:
-                continue
-            # `_is_last_in_tier` (via `_score`) is computed against `cands`,
-            # so for QB it must still see the position's FULL available list
-            # -- the tier filter below narrows *candidacy*, not tier-closure
-            # math -- hence it's applied to a separate `filtered` view.
-            filtered = cands
-            if pos == "QB" and qb_n < len(params.qb_tier_targets):
-                max_tier = params.qb_tier_targets[qb_n]
-                filtered = [c for c in cands if c.tier <= max_tier]
-                if not filtered:
-                    continue
-            for c in filtered[:CAND_WINDOW]:
-                scored.append((_score(c, cands, params.tier_break_bonus), c))
-
-        if not scored:
-            raise ValueError(
-                f"make_strategy_fn: no feasible/under-cap/in-window candidate "
-                f"at round {round_} (counts={counts}, "
-                f"picks_left_after={picks_left_after})"
-            )
-        return _pick_best(scored)
+        return evaluate_rules(avail_by_pos, round_, counts, picks_left_after, params)[0]
 
     return strategy_fn
