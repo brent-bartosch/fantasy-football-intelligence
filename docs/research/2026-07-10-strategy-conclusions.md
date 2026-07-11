@@ -38,7 +38,7 @@ cited at all.
 
 1. **QB: build a 2-QB core; do NOT front-load a 3-QB hoard early.** Take QB1 when VORP dictates (typically R1-2 in this superflex/2-QB league), but do not reach to stack 2-3 QBs in the first handful of rounds. Confidence: moderate-high on "don't front-load," lower on exactly how much to delay.
 2. **DEF/K: draft them in the last ~5-6 rounds (round 14-18) or stream -- not early.** This REVISES Phase 2's "draft early" verdict at the level of *action*. Confidence: high that round 8-11 is wrong; moderate on 14 vs 18.
-3. **Tier-break bonus: drop it (keep `tier_break_bonus=0.0`).** No measurable benefit; the effect is -0.1% (within noise). Confidence: high.
+3. **Tier-break bonus: drop it (keep `tier_break_bonus=0.0`).** No measurable benefit; the effect is ±0.1% (within noise). Confidence: high.
 4. **Sim-vs-reality transfer of QB ordering is now MODERATE (Spearman 0.60), up from 0.20 after opponent calibration -- above the 0.4 "material transfer" bar.** Both methods rank front-loading QB worst AND both now put a QB1-early 2-QB build near the top; they still disagree only on how far to delay QB1 (the farm favors maximum delay; the backtest favors the early-QB1 2-QB core). The methods now materially agree, so the earlier blanket "rank the backtest above the sim" no longer applies -- but where they still diverge (degree of delay) the real-points backtest remains the tie-breaker, and it does not reward maximum delay. See the post-calibration addendum.
 
 ---
@@ -70,6 +70,8 @@ most likely an MC-evaluator artifact, not real edge.
 
 ### Caveat (BINDING -- must travel with this conclusion)
 
+_[Resolved 2026-07-10: opponents now take QB1 at ~1.77 vs the room's 1.83 after calibration; a smaller QB3-direction residual replaces this caveat -- see the Addendum.]_
+
 The sim's opponents take their first QB at a mean round of **2.84 vs the league's
 historical 1.83** (assumption-audit WARN, `reports/sim-farm-2026-07-10.md`). The
 sim's opponents therefore leave QBs on the board LONGER than the real league does,
@@ -86,7 +88,8 @@ that the QB-hoard scenario reorders the top-24 board 10/24 between hoard_0 and
 hoard_12/24: the qb_subgrid table shows the plan ORDERING is stable across all
 three hoard scenarios -- the two earliest-QB plans (0 and 4) sit at the bottom
 in every scenario within noise (e.g. qb_hoard_12: plan 4 at 68.8% vs plan 0 at
-69.1%, CI-overlapping), and plans 2/3 are best in each -- so the board churn
+69.1%, CI-overlapping), and plans 2/3 (and in qb_hoard_0, plan 5) sit at the top
+in every scenario, CI-overlapping -- so the board churn
 does not change the timing policy -- it changes which QBs, not when._
 
 ## 2. DEF/K policy (Phase 2 verdict revised in decision context)
@@ -146,13 +149,15 @@ late/stream.
 **Recommendation: DROP the tier-break bonus (keep `tier_break_bonus=0.0`).**
 
 Adding an 8-point score bump for closing out a positional tier changed mean
-all-play% by **-0.1%** across 24 vs 24 main-grid cells -- i.e. nothing, and if
-anything slightly negative. It adds a knob and a rationale ("grab the last player
+all-play% by **±0.1%** across 24 vs 24 main-grid cells -- i.e. nothing, within
+the noise floor either direction. It adds a knob and a rationale ("grab the last player
 in a tier before a cliff") that the evidence does not support at this league's
 tier structure. Confidence: high. (Note: the farm did not grid the positional
 *caps*, so no caps recommendation is made -- that would be fabricated evidence.)
 
 ## 4. Sim-vs-backtest agreement (R7's earliest signal)
+
+_[Superseded 2026-07-10 by the post-calibration re-verification -- R7 transfer is now ρ=0.60, ABOVE the 0.4 bar; see the Addendum. The text below describes the PRE-calibration state.]_
 
 **Result: Spearman ρ = 0.20 (n=6, p=0.70) between the farm and backtest QB-plan
 orderings -- weak-positive, BELOW the 0.4 "material transfer" bar. R7 has partially
@@ -206,7 +211,7 @@ p-value no power; the rank agreement, not the p-value, is the signal.)
 - **Opponent QB bias (Section 1 caveat).** Sim opponents take QB1 at mean round
   2.84 vs the league's 1.83 -- delayed-QB strategies look safer in sim than they
   will in your real draft. Directional (biased 198-draft sample), but it points
-  one way: don't over-delay.
+  one way: don't over-delay. _[resolved post-calibration -- see Addendum]_
 - **Slot-vs-human annotation coverage.** Opponent priors blend all humans per
   slot (recency-weighted); only slot 12 is annotated today. A per-manager
   annotation pass would sharpen the opponent model and is the highest-value
