@@ -36,9 +36,9 @@ from ffi.sim.pool import PoolPlayer
 from ffi.sim.priors import POSITIONS
 from ffi.sim.strategy import (
     StrategyParams,
-    _adp_sort_key,
-    _is_last_in_tier,
+    adp_sort_key,
     evaluate_rules,
+    is_last_in_tier,
     rule4_candidates,
 )
 
@@ -63,7 +63,7 @@ def _sorted_desc(scored: list) -> list:
 
     def key(item):
         score, player = item
-        return (-score, _adp_sort_key(player), player.name)
+        return (-score, adp_sort_key(player), player.name)
 
     return sorted(scored, key=key)
 
@@ -74,7 +74,7 @@ def _last_in_tier_notes(avail_by_pos: dict) -> list:
         if not cands:
             continue
         best = cands[0]
-        if _is_last_in_tier(best, cands):
+        if is_last_in_tier(best, cands):
             notes.append(f"last tier-{best.tier} {pos} on the board")
     return notes
 

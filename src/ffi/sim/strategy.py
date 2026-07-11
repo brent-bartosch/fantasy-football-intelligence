@@ -123,18 +123,27 @@ def _unmet_positions(counts: dict) -> list[str]:
     return unmet
 
 
-def _is_last_in_tier(player: PoolPlayer, avail_for_pos: list) -> bool:
+def is_last_in_tier(player: PoolPlayer, avail_for_pos: list) -> bool:
+    """True when no other player in `avail_for_pos` (the position's full
+    available list) shares `player`'s tier -- taking `player` now closes out
+    the tier. Public (Phase 4 Task 12 review fix): `ffi.draft.recommend`
+    reuses this directly for its own last-in-tier notes rather than
+    reimplementing it, so the two can't drift apart."""
     return not any(
         other.tier == player.tier for other in avail_for_pos if other.ref != player.ref
     )
 
 
 def _score(player: PoolPlayer, avail_for_pos: list, tier_break_bonus: float) -> float:
-    bonus = tier_break_bonus if _is_last_in_tier(player, avail_for_pos) else 0.0
+    bonus = tier_break_bonus if is_last_in_tier(player, avail_for_pos) else 0.0
     return player.vorp + bonus
 
 
-def _adp_sort_key(player: PoolPlayer) -> tuple:
+def adp_sort_key(player: PoolPlayer) -> tuple:
+    """Sort key: real ADP ascending, `None` ADP always last. Public (Phase 4
+    Task 12 review fix): `ffi.draft.recommend` reuses this directly for its
+    own `top`/`by_position` tiebreak so it matches `_pick_best`'s ordering
+    exactly rather than reimplementing the None-last rule."""
     return (player.adp is None, player.adp if player.adp is not None else 0.0)
 
 
@@ -144,7 +153,7 @@ def _pick_best(scored: list) -> PoolPlayer:
 
     def key(item):
         score, player = item
-        return (-score, _adp_sort_key(player), player.name)
+        return (-score, adp_sort_key(player), player.name)
 
     return min(scored, key=key)[1]
 
@@ -195,7 +204,7 @@ def rule4_candidates(
         cands = avail_by_pos.get(pos) or []
         if not cands:
             continue
-        # `_is_last_in_tier` (via `_score`) is computed against `cands`, so
+        # `is_last_in_tier` (via `_score`) is computed against `cands`, so
         # for QB it must still see the position's FULL available list -- the
         # tier filter below narrows *candidacy*, not tier-closure math --
         # hence it's applied to a separate `filtered` view.

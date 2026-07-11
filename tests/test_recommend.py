@@ -66,20 +66,32 @@ def _capture_states(seeds, params):
     return states
 
 
-def test_primary_equals_strategy_fn_property():
-    params = StrategyParams()
+def _assert_primary_matches_strategy_fn(params, seeds, min_states=200):
     strategy_fn = make_strategy_fn(params)
-    # 11 seeds x 19 our-seat turns/draft = 209 >= 200 legal states.
-    states = _capture_states(range(11), params)
-    assert len(states) >= 200
+    states = _capture_states(seeds, params)
+    assert len(states) >= min_states
 
-    for avail_by_pos, round_, counts, picks_left_after in states[:200]:
+    for avail_by_pos, round_, counts, picks_left_after in states[:min_states]:
         expected = strategy_fn(avail_by_pos, round_, counts, picks_left_after)
         rec = recommend(avail_by_pos, round_, counts, picks_left_after, params)
         assert rec.primary.ref == expected.ref, (
             f"round={round_} counts={counts} picks_left_after={picks_left_after}: "
             f"recommend primary {rec.primary.ref!r} != strategy_fn {expected.ref!r}"
         )
+
+
+def test_primary_equals_strategy_fn_property():
+    # 11 seeds x 19 our-seat turns/draft = 209 >= 200 legal states.
+    _assert_primary_matches_strategy_fn(StrategyParams(), range(11))
+
+
+def test_primary_equals_strategy_fn_property_nondefault_gating():
+    # Drives the shared `rule4_candidates` gating branch (qb_tier_targets
+    # narrowing + a nonzero tier_break_bonus tiebreak) through the same
+    # consistency property, not just the default params -- the review flag
+    # that motivated promoting is_last_in_tier/adp_sort_key to public names.
+    params = StrategyParams(qb_tier_targets=(1, 2, 99), tier_break_bonus=8.0)
+    _assert_primary_matches_strategy_fn(params, range(11, 22))
 
 
 # ---------------------------------------------------------------------------
