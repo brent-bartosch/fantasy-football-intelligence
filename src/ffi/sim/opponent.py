@@ -27,6 +27,8 @@ returning a nonsensical pick — that state should never occur in a
 well-formed draft, so seeing it means an upstream invariant (roster
 counting, picks-remaining bookkeeping) is broken.
 """
+from dataclasses import dataclass
+
 import numpy as np
 
 from ffi.sim.priors import POSITIONS, SlotPriors
@@ -51,6 +53,21 @@ ROSTER_DAMP = {
 # separate from any STARTERS in ffi.valuation — that module's STARTERS serves
 # a different (non-flex-aware) purpose and the two must not be conflated.
 STARTERS = {"QB": 2, "RB": 2, "WR": 3, "TE": 1, "K": 1, "DEF": 1}
+
+
+@dataclass(frozen=True)
+class OpponentParams:
+    tau: float = TAU
+    cand_window: int = CAND_WINDOW
+    # Per-position prior-share multiplier indexed by CURRENT count at that
+    # position, e.g. (("QB", (3.0, 1.4, 1.0)),) => a slot holding 0 QBs has
+    # its QB prior share ×3.0, holding 1 => ×1.4, holding >=2 => ×1.0 (past
+    # the tuple's end, the LAST entry extends). () = mechanism off = bit-
+    # identical legacy behavior.
+    pos_need_scale: tuple[tuple[str, tuple[float, ...]], ...] = ()
+
+
+DEFAULT_OPPONENT_PARAMS = OpponentParams()
 
 
 def required_picks(counts: dict) -> int:
@@ -84,6 +101,7 @@ def opponent_pick(
     counts: dict,
     picks_left_after: int,
     rng: np.random.Generator,
+    params: OpponentParams | None = None,
 ) -> PoolPlayer:
     """Simulate one opponent draft pick.
 
@@ -94,7 +112,9 @@ def opponent_pick(
     Raises `ValueError` if no position is both available and feasible given
     `picks_left_after` (should never happen in a well-formed draft).
     """
+    params = params or DEFAULT_OPPONENT_PARAMS
     share = priors.pos_share[(slot, round_)]
+    scale_map = dict(params.pos_need_scale)
     weights = {}
     for pos in POSITIONS:
         cands = avail_by_pos.get(pos) or []
@@ -105,6 +125,9 @@ def opponent_pick(
         crossed = [t for t in damp if counts.get(pos, 0) >= t]
         if crossed:
             w *= damp[max(crossed)]
+        sc = scale_map.get(pos)
+        if sc:
+            w *= sc[min(counts.get(pos, 0), len(sc) - 1)]
         weights[pos] = w
 
     if not weights:
@@ -121,6 +144,6 @@ def opponent_pick(
     probs = [weights[p] / total for p in positions]
     pos = positions[rng.choice(len(positions), p=probs)]
 
-    cands = avail_by_pos[pos][:CAND_WINDOW]
-    logits = np.exp(-np.arange(len(cands)) / TAU)
+    cands = avail_by_pos[pos][: params.cand_window]
+    logits = np.exp(-np.arange(len(cands)) / params.tau)
     return cands[rng.choice(len(cands), p=logits / logits.sum())]

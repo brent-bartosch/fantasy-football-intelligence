@@ -51,7 +51,7 @@ from typing import Callable
 
 import numpy as np
 
-from ffi.sim.opponent import feasible, opponent_pick
+from ffi.sim.opponent import OpponentParams, feasible, opponent_pick
 from ffi.sim.pool import PoolPlayer
 from ffi.sim.priors import SlotPriors
 
@@ -150,6 +150,7 @@ def run_draft(
     seed: int,
     our_franchise_slot: int = 12,
     our_position: int | None = None,
+    opponent_params: OpponentParams | None = None,
 ) -> DraftResult:
     """Simulate one full 12-team, 19-round snake draft.
 
@@ -199,6 +200,7 @@ def run_draft(
                 seat_counts,
                 picks_left_after,
                 rng,
+                params=opponent_params,
             )
 
         taken.add(pick.ref)

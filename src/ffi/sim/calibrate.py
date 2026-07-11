@@ -42,9 +42,10 @@ def measure_qb_timing(
     """Run `n_drafts` seeded drafts (seeds `base_seed .. base_seed+n_drafts-1`)
     and aggregate opponent (franchise_slot != 12) QB-round timing.
 
-    `opponent_params` is accepted and ignored when None -- Task 3 threads it
-    through `run_draft` for real; the kwarg exists now so Task 4's fit loop
-    doesn't need a signature change here.
+    `opponent_params`, when given, is threaded through to every `run_draft`
+    call (and from there to every `opponent_pick`); `None` uses
+    `ffi.sim.opponent.DEFAULT_OPPONENT_PARAMS` (bit-identical legacy
+    behavior).
     """
     our_pick_fn = make_strategy_fn(StrategyParams())
 
@@ -67,6 +68,7 @@ def measure_qb_timing(
             seed,
             our_franchise_slot=OUR_FRANCHISE_SLOT,
             our_position=None,
+            opponent_params=opponent_params,
         )
 
         qb_n_by_slot: dict = defaultdict(int)
