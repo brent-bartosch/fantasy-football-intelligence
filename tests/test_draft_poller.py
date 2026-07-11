@@ -159,6 +159,22 @@ def test_unknown_team_key_raises(tmp_path):
     assert [e for e in events if e.kind == "pick"] == []
 
 
+def test_earlier_valid_picks_in_batch_stay_logged_before_bad_one_raises(tmp_path):
+    log = DraftLog(tmp_path / "draft.jsonl")
+    picks = [
+        _pick(1, 1, "461.l.1.t.1", player_id="100"),  # valid
+        _pick(2, 1, "461.l.1.t.99", player_id="100"),  # unknown team_key
+    ]
+    poller = DraftPoller(lambda: picks, _resolve_ok, TEAM_SLOTS, log)
+
+    with pytest.raises(ValueError):
+        poller.poll()
+
+    _, events, _ = DraftLog.replay(log.path)
+    pick_events = [e for e in events if e.kind == "pick"]
+    assert [e.payload["overall"] for e in pick_events] == [1]
+
+
 # --- load_team_slots / build_resolver: DB-backed ---
 
 

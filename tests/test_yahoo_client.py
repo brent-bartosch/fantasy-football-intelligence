@@ -103,16 +103,29 @@ def test_ensure_fresh_token_skips_when_fresh(monkeypatch):
 
 
 def test_ensure_fresh_token_raises_on_refresh_failure(monkeypatch):
+    """KeyError is the real failure mode for a revoked refresh token:
+    yahoo_oauth's oauth2_access_parser does json.loads(body)['access_token'],
+    and Yahoo's error body for a revoked token lacks that key."""
     clock = {"t": 4200.0}
     monkeypatch.setattr(yc.time, "time", lambda: clock["t"])
-    sc = _FakeSC(
-        token_time=1000.0, refresh_raises=RuntimeError("refresh token revoked")
-    )
+    sc = _FakeSC(token_time=1000.0, refresh_raises=KeyError("access_token"))
 
     with pytest.raises(yc.YahooAuthError):
         yc.ensure_fresh_token(sc, margin_s=900)
 
     assert sc.refresh_calls == 1
+
+
+def test_ensure_fresh_token_propagates_unrelated_bugs_raw(monkeypatch):
+    """An AttributeError from bad wiring (not a real refresh failure) must
+    NOT be laundered into YahooAuthError -- that would read to the
+    ModeMachine as "Yahoo is down" instead of crashing loud as a bug."""
+    clock = {"t": 4200.0}
+    monkeypatch.setattr(yc.time, "time", lambda: clock["t"])
+    sc = _FakeSC(token_time=1000.0, refresh_raises=AttributeError("boom"))
+
+    with pytest.raises(AttributeError):
+        yc.ensure_fresh_token(sc, margin_s=900)
 
 
 def test_ensure_fresh_token_raises_if_still_invalid_after_refresh(monkeypatch):

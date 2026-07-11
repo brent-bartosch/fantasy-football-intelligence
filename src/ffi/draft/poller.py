@@ -40,7 +40,9 @@ class ResolvedPick:
 class PollResult:
     new_picks: tuple[ResolvedPick, ...]
     latency_s: float  # wall time of the fetch_fn call only (rehearsal metric)
-    total_made: int  # picks with a player_id in this fetch
+    total_made: int  # picks with a player_id in this fetch -- Yahoo's
+    # draftresults is always a full snapshot (not a delta), so this equals
+    # the true cumulative made-pick count, not just "new since last poll"
 
 
 class DraftPoller:

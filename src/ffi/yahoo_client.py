@@ -92,7 +92,16 @@ def ensure_fresh_token(sc, margin_s: int = 900) -> bool:
         return False
     try:
         sc.refresh_access_token()
-    except Exception as exc:
+    except (requests.RequestException, json.JSONDecodeError, KeyError) as exc:
+        # yahoo_oauth's refresh_access_token() sets token_time BEFORE the
+        # request, then does json.loads(raw_access.content)['access_token']:
+        # a network failure raises RequestException, a non-JSON error body
+        # raises JSONDecodeError, and a revoked refresh token comes back as
+        # an error body that parses but lacks 'access_token' -> KeyError.
+        # These three are the real refresh failure surface; anything else
+        # (e.g. AttributeError from bad wiring) is a bug and must crash raw,
+        # not be laundered into a Yahoo-down signal the ModeMachine would
+        # degrade gracefully from.
         raise YahooAuthError(
             f"Proactive Yahoo token refresh failed: {exc}. Flip to MANUAL "
             "and keep drafting from the board."
