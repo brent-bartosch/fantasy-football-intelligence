@@ -29,6 +29,11 @@ uv run python scripts/drill_draft.py --drill refresh --season 2024
 uv run python scripts/drill_draft.py --drill crash   --season 2024
 ```
 
+The poll interval defaults to **10s — the ADR band ceiling**, the binding worst
+case for the lag criterion (the interval dominates end-to-end lag). Override
+with `--poll-interval <s>` (e.g. `7` to profile the production operating point).
+The lag PASS of record must be at the ceiling; a 5s run is not binding evidence.
+
 ## The ladder
 
 | Level | Venue | What it exercises | Entry criterion | Exit criterion |

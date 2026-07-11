@@ -274,6 +274,9 @@ def _build_session(
 
 
 def _tmp_log() -> Path:
+    # System temp dir (mkstemp), never the repo tree, so a drill leaves no
+    # tracked litter. The small drill-*.jsonl files it leaves in $TMPDIR are
+    # ephemeral evidence, OS-reaped -- accepted, not cleaned up here.
     fd, name = tempfile.mkstemp(prefix="drill-", suffix=".jsonl")
     p = Path(name)
     p.unlink()  # DraftLog wants to create it fresh (empty)
@@ -324,10 +327,23 @@ def _log_row(drill: str, result: str, metrics: str) -> None:
 # The four drills
 # --------------------------------------------------------------------------
 
-POLL_INTERVAL_S = 5.0  # ADR D1: 5-10s; the drill uses the tight end for margin
+# ADR D1 sets the poll interval band at 5-10s. The lag criterion (p95 < 15s)
+# must be validated at the BINDING worst case -- the 10s ceiling, where the
+# interval dominates end-to-end lag -- not the easy 5s end. Production defaults
+# to 7s; the drill defaults to the ceiling so the recorded PASS is real
+# evidence. Overridable via --poll-interval.
+DEFAULT_POLL_INTERVAL_S = 10.0
 
 
-def _prep(conn, season: int, schedule: dict, clock, cadence_s: float, log_path=None):
+def _prep(
+    conn,
+    season: int,
+    schedule: dict,
+    clock,
+    cadence_s: float,
+    poll_interval: float = DEFAULT_POLL_INTERVAL_S,
+    log_path=None,
+):
     """Everything a drill needs before its loop: resolved league, real board +
     priors, team-slot map, our seat, and the fake transport."""
     league_key = _resolve_league_key(conn, season)
@@ -342,20 +358,22 @@ def _prep(conn, season: int, schedule: dict, clock, cadence_s: float, log_path=N
         our_franchise_slot=our_slot,
         our_position=our_pos,
         log_path=log_path or _tmp_log(),
-        poll_interval_s=POLL_INTERVAL_S,
+        poll_interval_s=poll_interval,
     )
     return league_key, picks, team_slots, pool, priors, fetch, cfg
 
 
-def drill_lag(conn, season: int) -> bool:
+def drill_lag(conn, season: int, poll_interval: float) -> bool:
     """Criterion 1: poll lag p95 < 15s, measured pick-visible-to-applied over a
     real-time-scaled replay (picks released every ~2.5s; >= 30 samples). Each
     pick's lag = wall time it was applied minus the wall time it became visible
     (`fetch.release_time`); PollResult.latency_s + apply time are the machine-
-    side components of that end-to-end lag."""
+    side components of that end-to-end lag. Run at the 10s poll-interval ceiling
+    (`poll_interval`) -- the interval dominates the lag, so the ceiling is the
+    binding case the criterion must clear."""
     cadence_s = 2.5
     _, picks, team_slots, pool, priors, fetch, cfg = _prep(
-        conn, season, {}, time.monotonic, cadence_s
+        conn, season, {}, time.monotonic, cadence_s, poll_interval=poll_interval
     )
     session = _build_session(
         conn, cfg, pool, priors, ModeMachine(), fetch, team_slots, time.monotonic
@@ -384,15 +402,15 @@ def drill_lag(conn, season: int) -> bool:
     ok = p95 < 15.0
     metrics = (
         f"p95={p95:.2f}s median={statistics.median(samples):.2f}s "
-        f"max={max(samples):.2f}s n={len(samples)} (interval={POLL_INTERVAL_S}s, "
-        f"cadence={cadence_s}s)"
+        f"max={max(samples):.2f}s n={len(samples)} (interval={poll_interval}s "
+        f"[ADR ceiling], cadence={cadence_s}s)"
     )
     print(f"{'PASS' if ok else 'FAIL'} lag: {metrics}")
     _log_row("lag", "PASS" if ok else "FAIL", metrics)
     return ok
 
 
-def drill_999(conn, season: int) -> bool:
+def drill_999(conn, season: int, poll_interval: float) -> bool:
     """Criterion 3 (machine side): inject error 999 at a mid-draft pick and
     assert the session flips to MANUAL immediately with exactly ONE mode event
     logged, and stays there (no retry). The <30s human switchover half runs at
@@ -400,7 +418,12 @@ def drill_999(conn, season: int) -> bool:
     inject_at = 40
     clock = FakeClock()
     _, picks, team_slots, pool, priors, fetch, cfg = _prep(
-        conn, season, {"rate_limit_at": inject_at}, clock, cadence_s=1.0
+        conn,
+        season,
+        {"rate_limit_at": inject_at},
+        clock,
+        cadence_s=1.0,
+        poll_interval=poll_interval,
     )
     session = _build_session(
         conn, cfg, pool, priors, ModeMachine(), fetch, team_slots, clock
@@ -408,7 +431,7 @@ def drill_999(conn, season: int) -> bool:
 
     manual_reached_at = None
     for _ in range(inject_at + 20):
-        clock.advance(POLL_INTERVAL_S)
+        clock.advance(poll_interval)
         session.tick()
         if session.mode is Mode.MANUAL and manual_reached_at is None:
             manual_reached_at = len(_applied(session))
@@ -432,13 +455,13 @@ def drill_999(conn, season: int) -> bool:
     return ok
 
 
-def drill_refresh(conn, season: int) -> bool:
+def drill_refresh(conn, season: int, poll_interval: float) -> bool:
     """Criterion 2: force the token near expiry (token_time ~ now-3540, i.e.
     60s of life vs a 900s margin) so `ensure_fresh_token` refreshes proactively
     on the fetch path, and assert ZERO picks missed vs the script."""
     clock = FakeClock()
     league_key, picks, team_slots, pool, priors, base_fetch, cfg = _prep(
-        conn, season, {}, clock, cadence_s=1.0
+        conn, season, {}, clock, cadence_s=1.0, poll_interval=poll_interval
     )
     sc = _FakeOAuth(token_time=time.time() - 3540)
 
@@ -450,7 +473,7 @@ def drill_refresh(conn, season: int) -> bool:
         conn, cfg, pool, priors, ModeMachine(), fetch_with_refresh, team_slots, clock
     )
     for _ in range(len(picks) + 10):
-        clock.advance(POLL_INTERVAL_S)
+        clock.advance(poll_interval)
         session.tick()
         if len(_applied(session)) >= len(picks):
             break
@@ -466,7 +489,7 @@ def drill_refresh(conn, season: int) -> bool:
     return ok
 
 
-def drill_crash(conn, season: int) -> bool:
+def drill_crash(conn, season: int, poll_interval: float) -> bool:
     """Criterion 4: kill the session mid-draft at a pick, resume from the log
     (`DraftSession.resume` + `attach_poller`), finish the draft, and assert the
     derived state (taken / counts / overall / mode) is EXACTLY equal to a
@@ -476,13 +499,13 @@ def drill_crash(conn, season: int) -> bool:
     # Control: one straight run, its own transport + log.
     ctrl_clock = FakeClock()
     _, picks, team_slots, pool, priors, ctrl_fetch, ctrl_cfg = _prep(
-        conn, season, {}, ctrl_clock, cadence_s=1.0
+        conn, season, {}, ctrl_clock, cadence_s=1.0, poll_interval=poll_interval
     )
     control = _build_session(
         conn, ctrl_cfg, pool, priors, ModeMachine(), ctrl_fetch, team_slots, ctrl_clock
     )
     for _ in range(len(picks) + 10):
-        ctrl_clock.advance(POLL_INTERVAL_S)
+        ctrl_clock.advance(poll_interval)
         control.tick()
         if len(_applied(control)) >= len(picks):
             break
@@ -497,13 +520,13 @@ def drill_crash(conn, season: int) -> bool:
         our_franchise_slot=ctrl_cfg.our_franchise_slot,
         our_position=ctrl_cfg.our_position,
         log_path=log_path,
-        poll_interval_s=POLL_INTERVAL_S,
+        poll_interval_s=poll_interval,
     )
     session = _build_session(
         conn, crash_cfg, pool, priors, ModeMachine(), fetch, team_slots, clock
     )
     while len(_applied(session)) < crash_after:
-        clock.advance(POLL_INTERVAL_S)
+        clock.advance(poll_interval)
         session.tick()
     crashed_at = len(_applied(session))
     del session  # "kill -9": drop the in-memory object; only the log survives
@@ -520,7 +543,7 @@ def drill_crash(conn, season: int) -> bool:
         resume=True,
     )
     for _ in range(len(picks) + 10):
-        clock.advance(POLL_INTERVAL_S)
+        clock.advance(poll_interval)
         resumed.tick()
         if len(_applied(resumed)) >= len(picks):
             break
@@ -554,11 +577,18 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Rehearsal drill harness (Task 17)")
     ap.add_argument("--drill", required=True, choices=sorted(DRILLS))
     ap.add_argument("--season", type=int, default=2024)
+    ap.add_argument(
+        "--poll-interval",
+        type=float,
+        default=DEFAULT_POLL_INTERVAL_S,
+        help="session poll interval in seconds; defaults to the 10s ADR ceiling "
+        "(the binding worst case for the lag criterion). Production runs at 7s.",
+    )
     args = ap.parse_args()
 
     conn = connect()
     try:
-        ok = DRILLS[args.drill](conn, args.season)
+        ok = DRILLS[args.drill](conn, args.season, args.poll_interval)
     finally:
         conn.close()
     raise SystemExit(0 if ok else 1)
