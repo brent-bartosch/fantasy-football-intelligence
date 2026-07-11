@@ -75,6 +75,14 @@ class SessionConfig:
 
 _MODE_WORDS = {"live": Mode.LIVE, "manual": Mode.MANUAL, "paper": Mode.PAPER}
 
+# Task 16 (advisory agent lane, EXPENDABLE per risk R3): a separate OS process
+# tails the log and writes this file atomically after each opponent pick. It
+# is rendered here ONLY when fresh (mtime < this threshold) -- a dead or
+# absent lane degrades to one disclosure line, never a crash; the lane can be
+# killed at any point in a draft with zero effect on the board.
+AGENT_LANE_PATH = Path("reports/draft-annotations-live.md")
+AGENT_LANE_STALE_S = 300
+
 
 class DraftSession:
     def __init__(
@@ -415,7 +423,19 @@ class DraftSession:
                 f"({v.get('adp_age_hours')}h old), valuation "
                 f"{v.get('valuation_snapshot_id')}"
             )
+        lines += self._agent_lane_lines()
         return lines
+
+    def _agent_lane_lines(self) -> list[str]:
+        """Task 16's advisory lane content, rendered only when fresh -- see
+        `AGENT_LANE_PATH`/`AGENT_LANE_STALE_S` above."""
+        path = AGENT_LANE_PATH
+        if not path.exists():
+            return ["[AGENT LANE] stale/absent"]
+        age_s = time.time() - path.stat().st_mtime
+        if age_s >= AGENT_LANE_STALE_S:
+            return ["[AGENT LANE] stale/absent"]
+        return ["[AGENT LANE]"] + path.read_text(encoding="utf-8").splitlines()
 
     def recommendation(self) -> Recommendation:
         st = self._state
