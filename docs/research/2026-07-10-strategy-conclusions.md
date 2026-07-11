@@ -39,7 +39,7 @@ cited at all.
 1. **QB: build a 2-QB core; do NOT front-load a 3-QB hoard early.** Take QB1 when VORP dictates (typically R1-2 in this superflex/2-QB league), but do not reach to stack 2-3 QBs in the first handful of rounds. Confidence: moderate-high on "don't front-load," lower on exactly how much to delay.
 2. **DEF/K: draft them in the last ~5-6 rounds (round 14-18) or stream -- not early.** This REVISES Phase 2's "draft early" verdict at the level of *action*. Confidence: high that round 8-11 is wrong; moderate on 14 vs 18.
 3. **Tier-break bonus: drop it (keep `tier_break_bonus=0.0`).** No measurable benefit; the effect is ±0.1% (within noise). Confidence: high.
-4. **Sim-vs-reality transfer of QB ordering is now MODERATE (Spearman 0.60), up from 0.20 after opponent calibration -- above the 0.4 "material transfer" bar.** Both methods rank front-loading QB worst AND both now put a QB1-early 2-QB build near the top; they still disagree only on how far to delay QB1 (the farm favors maximum delay; the backtest favors the early-QB1 2-QB core). The methods now materially agree, so the earlier blanket "rank the backtest above the sim" no longer applies -- but where they still diverge (degree of delay) the real-points backtest remains the tie-breaker, and it does not reward maximum delay. See the post-calibration addendum.
+4. **Sim-vs-reality transfer of QB ordering is now MODERATE (Spearman 0.60), up from 0.20 after opponent calibration -- above the 0.4 "material transfer" bar.** Both methods rank front-loading QB worst AND both now put a QB1-early 2-QB build near the top; they still disagree only on how far to delay QB1 (the farm favors maximum delay; the backtest favors the early-QB1 2-QB core). The methods now materially agree, so the earlier blanket "rank the backtest above the sim" no longer applies -- but where they still diverge (degree of delay) the real-points backtest remains the tie-breaker, and it does not reward maximum delay. See the post-calibration addendum. (seed-sensitive -- see Section 5)
 5. **QB tier-target refinement: cap QB1 to tier <= 1 (this year, Josh Allen alone) and let the round-2 deadline take the fallback if he's gone.** +1.3 points over the round-plan control -- the only tested tier-target plan to clear ±1.96se; every other restriction, including the mechanically "obvious" one, is noise or worse. Composes with #1, doesn't replace it. Confidence: moderate (one farm night, not backtest-cross-checked). See Section 6.
 
 ---
@@ -213,6 +213,12 @@ p-value no power; the rank agreement, not the p-value, is the signal.)
   2.84 vs the league's 1.83 -- delayed-QB strategies look safer in sim than they
   will in your real draft. Directional (biased 198-draft sample), but it points
   one way: don't over-delay. _[resolved post-calibration -- see Addendum]_
+- **Seed sensitivity (2026-07-10, found during Task 6): the R7 Spearman 0.600
+  rests partly on a plan0/plan4 near-tie on the farm side; a single reseed
+  (base_seed 20260712) flips that tie and drops rho to 0.429 (below the 0.4
+  bar).** Read "moderate transfer" as seed-fragile -- the robust cross-method
+  result remains that hoard-early plans sit at the bottom of both methods.
+  (`.superpowers/sdd/phase4-task-6-report.md`, farm-run section.)
 - **Slot-vs-human annotation coverage.** Opponent priors blend all humans per
   slot (recency-weighted); only slot 12 is annotated today. A per-manager
   annotation pass would sharpen the opponent model and is the highest-value
@@ -312,6 +318,11 @@ VORP says (early is fine); do not push QB1 delay to the extreme.**
 
 **(c) New R7 Spearman: 0.60** (p=0.208, n=6 -- still low power; read the rank
 agreement, not the p-value), up from 0.20. Above the 0.4 bar for the first time.
+_Seed sensitivity (2026-07-10, found during Task 6): the R7 Spearman 0.600 rests
+partly on a plan0/plan4 near-tie on the farm side; a single reseed (base_seed
+20260712) flips that tie and drops rho to 0.429 (below the 0.4 bar). Read
+"moderate transfer" as seed-fragile -- the robust cross-method result remains
+that hoard-early plans sit at the bottom of both methods._
 
 ### What the calibration changed about the caveats
 
@@ -345,9 +356,9 @@ for the 0.20 -> 0.60 Spearman.
 
 <!-- BEGIN GENERATED EVIDENCE (scripts/strategy_conclusions.py) -->
 
-_Generated 2026-07-10T21:09:26 from farm run dated 2026-07-10 (git b527d697f42dbc7c9d8d65fd3f3b1c4c0171e798-dirty)._
+_Generated 2026-07-10T21:47:06 from farm run dated 2026-07-10 (git a4dc0e86f01c2b8dc59cdd8c1504046e21c1e627)._
 
-_Data vintage: ADP snapshot #6 (14.06h old at farm time), valuation computed 2026-07-10T09:05:21.468303-07:00, priors latest_season 2025, degraded=False._
+_Data vintage: ADP snapshot #6 (14.35h old at farm time), valuation computed 2026-07-10T09:05:21.468303-07:00, priors latest_season 2025, degraded=False._
 
 ### Farm QB-policy (qb_subgrid, defk_round=14) -- all-play% by qb_plan x scenario
 
