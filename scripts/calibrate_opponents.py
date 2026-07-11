@@ -17,8 +17,10 @@ lands in Task 5's research doc). Task 4 Step 4 then adopts the winner as
 import argparse
 import datetime
 import pathlib
+import time
 
 from ffi.db import connect
+from ffi.sim.availability import forecast_availability
 from ffi.sim.calibrate import (
     _per_slot_qb1_mae,
     _seasons_weighted_mean,
@@ -27,6 +29,7 @@ from ffi.sim.calibrate import (
     measure_qb_timing,
     timing_gap_report,
 )
+from ffi.sim.draft import _build_sorted_pool
 from ffi.sim.opponent import OpponentParams
 from ffi.sim.pool import build_pool
 from ffi.sim.priors import build_slot_priors
@@ -203,11 +206,38 @@ def run_fit(conn, drafts: int, seed: int) -> None:
     print(f"-> wrote {out}")
 
 
+def run_vona_smoke(conn, seed: int) -> None:
+    """Manual perf smoke (Task 8 Step 3): the unit perf test bounds cost on
+    the 60-player synthetic fixture, but `_avail_view` filtering and the
+    `taken`-set ops scale with pool size (2,141 live vs ~342 synthetic) --
+    this runs the real thing against the live DB pool/priors: 200 rollouts x
+    22 synthetic upcoming picks (22 is the max opponent picks between our own
+    two picks, at a snake turn-boundary seat), and prints wall time. No
+    persistence -- print-only, like --measure."""
+    pool = build_pool(conn, SCENARIO)
+    priors = build_slot_priors(conn)
+    avail_by_pos = _build_sorted_pool(pool)
+
+    # 22 synthetic upcoming opponent picks spanning a round boundary
+    # (rounds 5->6), franchise slots cycling 1-12 twice -- a plausible
+    # snake-turn-boundary window, independent of any specific real draft.
+    upcoming = [(((i - 1) % 12) + 1, 5 if i <= 11 else 6, {}) for i in range(1, 23)]
+
+    start = time.perf_counter()
+    forecast_availability(avail_by_pos, priors, upcoming, n_rollouts=200, seed=seed)
+    elapsed = time.perf_counter() - start
+    print(
+        f"--vona-smoke: 200 rollouts x 22 upcoming picks over {len(pool)}-player "
+        f"live pool: {elapsed:.2f}s wall"
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     group = ap.add_mutually_exclusive_group(required=True)
     group.add_argument("--measure", action="store_true")
     group.add_argument("--fit", action="store_true")
+    group.add_argument("--vona-smoke", action="store_true")
     ap.add_argument("--drafts", type=int, default=200)
     ap.add_argument("--seed", type=int, default=20260710)
     args = ap.parse_args()
@@ -215,8 +245,10 @@ def main() -> None:
     conn = connect()
     if args.measure:
         run_measure(conn, args.drafts, args.seed)
-    else:
+    elif args.fit:
         run_fit(conn, args.drafts, args.seed)
+    else:
+        run_vona_smoke(conn, args.seed)
 
 
 if __name__ == "__main__":
