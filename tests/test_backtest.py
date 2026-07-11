@@ -10,8 +10,10 @@ from ffi.sim.backtest import (
     load_xwalk_lookup,
     match_row,
     normalize_name,
+    season_data_vintage,
     statline_from_archive,
     synthetic_proj_points,
+    upsert_season_pool,
     validate_pool_adequacy,
 )
 from ffi.sim.pool import PoolPlayer
@@ -237,3 +239,34 @@ def test_validate_pool_adequacy_fails_loud_when_thin():
     }
     with pytest.raises(ValueError, match="QB"):
         validate_pool_adequacy(rows_by_position)
+
+
+# ---------------------------------------------------------------------------
+# Season data vintage (per-position degraded flag + fraction)
+# ---------------------------------------------------------------------------
+
+
+def _pool_row(ref, name, position, degraded, adp=10.0):
+    return {
+        "ref": ref,
+        "name": name,
+        "position": position,
+        "proj_points": 100.0,
+        "vorp": 10.0,
+        "tier": 1,
+        "adp": adp,
+        "degraded": degraded,
+    }
+
+
+def test_season_data_vintage_reports_degraded_fraction_by_position(db):
+    rows = [
+        _pool_row("qb1", "QB One", "QB", degraded=False),
+        _pool_row("qb2", "QB Two", "QB", degraded=False),
+        _pool_row("rb1", "RB One", "RB", degraded=True),
+        _pool_row("rb2", "RB Two", "RB", degraded=False),
+    ]
+    upsert_season_pool(db, 2020, rows)
+    vintage = season_data_vintage(db, 2020)
+    assert vintage["degraded_fraction_by_pos"] == {"QB": 0.0, "RB": 0.5}
+    assert vintage["degraded_by_position"] == {"QB": False, "RB": True}

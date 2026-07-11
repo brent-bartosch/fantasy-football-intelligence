@@ -163,13 +163,29 @@ def is_top3(pct_map: dict, our_position: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def git_sha() -> str | None:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True, cwd=str(REPO_ROOT)
-        ).strip()
-    except Exception:
-        return None
+def git_sha() -> str:
+    """HEAD sha, `-dirty`-suffixed if the tree has uncommitted changes. No
+    fallback: a farm row with an unattributable sha is worse than a crashed
+    farm run, so a git failure propagates (CalledProcessError) rather than
+    being swallowed."""
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(REPO_ROOT),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dirty = (
+        subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(REPO_ROOT),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        != ""
+    )
+    return f"{sha}-dirty" if dirty else sha
 
 
 def build_data_vintage(conn, scenario: str, priors_latest_season: int) -> dict:
@@ -379,7 +395,7 @@ def persist_cell(
     data_vintage: dict,
     opponent_params: dict,
     base_seed: int,
-    sha: str | None,
+    sha: str,
 ) -> int:
     strategy_json = {
         **dataclasses.asdict(strategy_params),

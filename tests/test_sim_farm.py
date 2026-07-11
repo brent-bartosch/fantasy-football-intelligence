@@ -384,6 +384,42 @@ def test_main_requires_base_seed(monkeypatch, db):
 
 
 # ---------------------------------------------------------------------------
+# git_sha: dirty-aware, no fallback (Phase 3 Minor)
+# ---------------------------------------------------------------------------
+
+
+class _FakeCompletedProcess:
+    def __init__(self, stdout):
+        self.stdout = stdout
+
+
+def _fake_git_run(cmd, dirty_status):
+    if cmd[:2] == ["git", "rev-parse"]:
+        return _FakeCompletedProcess("abc1234\n")
+    if cmd[:2] == ["git", "status"]:
+        return _FakeCompletedProcess(dirty_status)
+    raise AssertionError(f"unexpected command {cmd}")
+
+
+def test_git_sha_appends_dirty_suffix_when_tree_is_dirty(monkeypatch):
+    monkeypatch.setattr(
+        run_sim_farm.subprocess,
+        "run",
+        lambda cmd, **kwargs: _fake_git_run(cmd, " M scripts/run_sim_farm.py\n"),
+    )
+    assert run_sim_farm.git_sha() == "abc1234-dirty"
+
+
+def test_git_sha_no_suffix_when_tree_is_clean(monkeypatch):
+    monkeypatch.setattr(
+        run_sim_farm.subprocess,
+        "run",
+        lambda cmd, **kwargs: _fake_git_run(cmd, ""),
+    )
+    assert run_sim_farm.git_sha() == "abc1234"
+
+
+# ---------------------------------------------------------------------------
 # sim_report.py: render_report on seeded fixture batches
 # ---------------------------------------------------------------------------
 

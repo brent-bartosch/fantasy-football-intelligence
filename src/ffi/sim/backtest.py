@@ -599,7 +599,7 @@ def season_data_vintage(conn, season: int) -> dict:
     points 3-5, carry-forward fact #3: "conclusions must carry the flag")."""
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT position, bool_or(degraded) FROM sim.backtest_pool "
+            "SELECT position, bool_or(degraded), avg(degraded::int) FROM sim.backtest_pool "
             "WHERE season=%s GROUP BY position",
             (season,),
         )
@@ -608,14 +608,19 @@ def season_data_vintage(conn, season: int) -> dict:
         raise ValueError(
             f"season_data_vintage: no sim.backtest_pool rows for season {season}"
         )
-    return {"season": season, "degraded_by_position": {pos: bool(d) for pos, d in rows}}
+    return {
+        "season": season,
+        "degraded_by_position": {pos: bool(any_d) for pos, any_d, _ in rows},
+        "degraded_fraction_by_pos": {pos: float(frac) for pos, _, frac in rows},
+    }
 
 
 def load_backtest_pool(conn, season: int) -> list:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT ref, name, position, proj_points, vorp, tier, adp "
-            "FROM sim.backtest_pool WHERE season=%s",
+            "FROM sim.backtest_pool WHERE season=%s "
+            "ORDER BY (adp IS NULL), adp, proj_points DESC, ref",
             (season,),
         )
         rows = cur.fetchall()
