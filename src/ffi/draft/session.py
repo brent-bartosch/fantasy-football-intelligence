@@ -428,14 +428,25 @@ class DraftSession:
 
     def _agent_lane_lines(self) -> list[str]:
         """Task 16's advisory lane content, rendered only when fresh -- see
-        `AGENT_LANE_PATH`/`AGENT_LANE_STALE_S` above."""
+        `AGENT_LANE_PATH`/`AGENT_LANE_STALE_S` above.
+
+        FAIL-LOUD Level 2: the annotations file is written by a separate,
+        expendable OS process this session doesn't control -- an unreadable
+        file or a torn/invalid-UTF-8 write it caught mid-`os.replace` is
+        degraded ADVISORY input, not a reason to crash the live assistant
+        (the shell's command dispatcher deliberately lets everything else
+        propagate). Disclosed in-banner as "[AGENT LANE] unreadable" instead;
+        the pick path is entirely unaffected either way."""
         path = AGENT_LANE_PATH
-        if not path.exists():
-            return ["[AGENT LANE] stale/absent"]
-        age_s = time.time() - path.stat().st_mtime
-        if age_s >= AGENT_LANE_STALE_S:
-            return ["[AGENT LANE] stale/absent"]
-        return ["[AGENT LANE]"] + path.read_text(encoding="utf-8").splitlines()
+        try:
+            if not path.exists():
+                return ["[AGENT LANE] stale/absent"]
+            age_s = time.time() - path.stat().st_mtime
+            if age_s >= AGENT_LANE_STALE_S:
+                return ["[AGENT LANE] stale/absent"]
+            return ["[AGENT LANE]"] + path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            return ["[AGENT LANE] unreadable"]
 
     def recommendation(self) -> Recommendation:
         st = self._state

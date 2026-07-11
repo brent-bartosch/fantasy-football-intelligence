@@ -43,6 +43,7 @@ from pathlib import Path
 from ffi.db import connect
 from ffi.draft.recommend import recommend
 from ffi.draft.replay import derive_state
+from ffi.draft.session import AGENT_LANE_PATH
 from ffi.sim.draft import (
     ROUNDS,
     TOTAL_PICKS,
@@ -54,23 +55,45 @@ from ffi.sim.pool import build_pool
 from ffi.sim.priors import build_slot_priors
 from ffi.sim.strategy import StrategyParams
 
-DEFAULT_OUT = Path("reports/draft-annotations-live.md")
+DEFAULT_OUT = AGENT_LANE_PATH  # single-sourced from session.py -- no desync possible
 DEFAULT_POLL_INTERVAL_S = 5.0
 
 
 def _read_events(path: Path) -> list[tuple[str, dict]]:
     """Read-only tail of the log -- see module docstring for why this
-    doesn't construct `DraftLog`. Any corruption beyond a torn final line
-    (an unparseable earlier line) raises `json.JSONDecodeError` and crashes
-    this process -- by design isolated from the pick path, never caught."""
+    doesn't construct `DraftLog`. Mirrors `ffi.draft.state._parse`'s
+    tolerance exactly: only the FINAL content line may be torn (an
+    unparseable last line, or a missing trailing newline entirely, both mean
+    the writer is mid-append -- dropped, picked up complete on the next
+    poll). Any earlier unparseable line is real corruption (a single writer
+    means a coincidentally-truncated-looking EARLIER line can't happen from
+    a normal crash) and raises `json.JSONDecodeError` uncaught, crashing this
+    process -- by design isolated from the pick path, never caught here."""
     if not path.exists():
         return []
     lines = path.read_text(encoding="utf-8").split("\n")
-    lines.pop()  # drop the trailing "" (clean file) or an in-flight partial write
+    ends_with_newline = lines[-1] == ""
+    if ends_with_newline:
+        lines.pop()
+    if not lines:
+        return []
+    body, last = lines[:-1], lines[-1]
+
     events = []
-    for line in lines:
+    for line in body:
         raw = json.loads(line)
         events.append((raw["kind"], raw["payload"]))
+
+    if ends_with_newline:
+        try:
+            raw = json.loads(last)
+        except json.JSONDecodeError:
+            pass  # torn final line despite the trailing newline -- drop it
+        else:
+            events.append((raw["kind"], raw["payload"]))
+    # else: no trailing newline at all -- crash mid-write; `last` is already
+    # excluded (it was popped into `body`/`last` split, never appended above)
+
     return events
 
 

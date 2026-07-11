@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from ffi.draft import session as session_module
 from ffi.draft.modes import Mode, ModeMachine
 from ffi.draft.poller import DraftPoller
 from ffi.draft.session import AmbiguousPickError, DraftSession, SessionConfig
@@ -469,3 +470,23 @@ def test_manual_then_poll_same_overall_no_double_count(tmp_path):
 
     roster = [ln for ln in session.status_lines() if "Our roster" in ln][0]
     assert "1 picks" in roster and "QB:1" in roster and "RB" not in roster  # poll won
+
+
+def test_status_lines_agent_lane_unreadable_file_disclosed_not_raised(
+    tmp_path, monkeypatch
+):
+    """Task 16's advisory lane writes `AGENT_LANE_PATH` from a separate,
+    expendable OS process this session doesn't control. A fresh file this
+    session can't decode (a torn `os.replace` mid-write, or any other
+    unreadable state) must degrade to a disclosure line -- never propagate
+    and crash the live assistant (FAIL-LOUD Level 2: advisory input only,
+    the pick path is untouched either way)."""
+    bad_path = tmp_path / "draft-annotations-live.md"
+    bad_path.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+    monkeypatch.setattr(session_module, "AGENT_LANE_PATH", bad_path)
+
+    cfg = _cfg(tmp_path)
+    session = _session(cfg, _pool(), _priors(), None, ModeMachine(), FakeClock())
+
+    lines = session.status_lines()  # must not raise
+    assert any("[AGENT LANE] unreadable" in ln for ln in lines)

@@ -8,14 +8,17 @@ the atomic annotation write) is I/O/process-boundary code exercised by manual
 disposable OS process that never touches the pick path, so its I/O plumbing
 isn't unit-tested the way `DraftSession`'s is.
 """
+import json
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from simfixtures import synthetic_pool, synthetic_priors  # noqa: E402
 
-from draft_agent_lane import build_annotation_context  # noqa: E402
+from draft_agent_lane import _read_events, build_annotation_context  # noqa: E402
 
 
 def _synthetic_events():
@@ -70,3 +73,29 @@ def test_build_annotation_context_is_pure_and_deterministic():
     second = build_annotation_context(events, pool, priors)
 
     assert first == second
+
+
+def test_read_events_drops_torn_final_line_even_with_trailing_newline(tmp_path):
+    """Matches `ffi.draft.state._parse`'s torn-tail tolerance exactly: a
+    final line that fails to parse -- even though the file ends with a
+    trailing newline -- is a writer-mid-append, dropped rather than raised;
+    the next poll picks it up once it's complete."""
+    path = tmp_path / "draft.jsonl"
+    good = json.dumps({"seq": 1, "kind": "meta", "payload": {"our_position": 1}})
+    path.write_text(good + "\n" + "{not valid json at all" + "\n", encoding="utf-8")
+
+    events = _read_events(path)
+
+    assert events == [("meta", {"our_position": 1})]
+
+
+def test_read_events_raises_on_an_earlier_unparseable_line(tmp_path):
+    """An unparseable line that ISN'T the final one is real corruption (a
+    single writer means a coincidentally-truncated-looking earlier line
+    can't happen from a normal mid-write crash) -- raises, doesn't drop."""
+    path = tmp_path / "draft.jsonl"
+    good = json.dumps({"seq": 2, "kind": "meta", "payload": {}})
+    path.write_text("{not valid json at all\n" + good + "\n", encoding="utf-8")
+
+    with pytest.raises(json.JSONDecodeError):
+        _read_events(path)
