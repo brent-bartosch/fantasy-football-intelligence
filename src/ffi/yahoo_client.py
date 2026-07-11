@@ -78,6 +78,34 @@ def get_session():
     return sc
 
 
+def ensure_fresh_token(sc, margin_s: int = 900) -> bool:
+    """Proactively refresh `sc`'s access token if it has less than margin_s
+    seconds of life left, instead of waiting for get_session's reactive
+    token_is_valid() check (ADR Domain 4). Call every assistant loop tick.
+    Returns True if a refresh was performed.
+
+    Any refresh failure -- the call raising, or the token still invalid
+    afterward -- raises YahooAuthError. Draft-day token death must be loud
+    so the operator flips to MANUAL and keeps drafting from the board."""
+    remaining = sc.token_time + 3600 - time.time()
+    if remaining >= margin_s:
+        return False
+    try:
+        sc.refresh_access_token()
+    except Exception as exc:
+        raise YahooAuthError(
+            f"Proactive Yahoo token refresh failed: {exc}. Flip to MANUAL "
+            "and keep drafting from the board."
+        ) from exc
+    if not sc.token_is_valid():
+        raise YahooAuthError(
+            "Yahoo token refresh completed but the token is still invalid "
+            "-- refresh token likely revoked. Flip to MANUAL and keep "
+            "drafting from the board."
+        )
+    return True
+
+
 def get_league(session, league_key: str):
     import yahoo_fantasy_api as yfa
 
