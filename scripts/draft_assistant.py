@@ -243,18 +243,25 @@ def main() -> None:
     write_paper_board(pool, paper_path)
     print(f"paper board written: {paper_path}")
 
-    log = DraftLog(cfg.log_path)
-    if args.no_poll:
-        poller = None
-        machine = ModeMachine(mode=Mode.MANUAL)  # --no-poll: pure MANUAL floor
-    else:
-        poller = _build_live_poller(cfg, conn, log)
-        machine = ModeMachine()  # LIVE
+    machine = ModeMachine(mode=Mode.MANUAL) if args.no_poll else ModeMachine()
 
-    if args.resume:
-        session = DraftSession.resume(cfg, pool, priors, poller, machine)
-    else:
-        session = DraftSession(cfg, pool, priors, poller, machine, log)
+    # The session owns the ONE DraftLog handle for this process. Build it first,
+    # then wire the poller to `session.log` -- never a second DraftLog on the
+    # same file (two _next_seq counters corrupt the log; ship-blocker fix).
+    try:
+        if args.resume:
+            session = DraftSession.resume(cfg, pool, priors, machine)
+        else:
+            session = DraftSession(
+                cfg, pool, priors, None, machine, DraftLog(cfg.log_path)
+            )
+    except ValueError as e:
+        # Startup preconditions (non-empty log without --resume, malformed log)
+        # are operator-fixable — exit clean with the message, not a stack trace.
+        raise SystemExit(f"draft_assistant: {e}")
+
+    if not args.no_poll:
+        session.attach_poller(_build_live_poller(cfg, conn, session.log))
 
     print(f"log: {cfg.log_path}")
     _print(session.status_lines())

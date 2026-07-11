@@ -288,7 +288,7 @@ def test_resume_reproduces_state(tmp_path):
     before_mode = session.mode
 
     # "Crash": drop the object, resume purely from the log file.
-    resumed = DraftSession.resume(cfg, pool, _priors(), None, ModeMachine())
+    resumed = DraftSession.resume(cfg, pool, _priors(), ModeMachine())
 
     assert resumed.on_the_clock_overall() == before_clock
     assert resumed.board_lines() == before_board
@@ -357,3 +357,115 @@ def test_tick_respects_poll_interval(tmp_path):
     clock.advance(7.0)  # interval elapsed
     session.tick()
     assert calls["n"] == 2
+
+
+# --------------------------------------------------------------------------
+# Fix wave 1: single DraftLog handle on resume (seq-corruption ship-blocker)
+# --------------------------------------------------------------------------
+
+
+def test_resume_with_poller_single_log_handle(tmp_path):
+    """Regression: resume owns ONE log handle; the poller is attached from
+    session.log. Both writers (poller pick + session mode event) share that
+    handle, so the file stays a strictly-increasing, un-torn seq sequence.
+    Two handles would race _next_seq and leave duplicate seqs that the NEXT
+    replay raises TornTailError on."""
+    cfg = _cfg(tmp_path, our_position=1, our_slot=1)
+    clock = FakeClock()
+    resolve = _resolver(
+        {"yp1": ("QB0", "QB Player 0", "QB"), "yp2": ("QB1", "QB Player 1", "QB")}
+    )
+
+    # Session 1: poll one pick (durable), then "crash".
+    picks1 = [_pick_payload(1, 1, "461.l.1.t.1", "yp1")]
+    log1 = DraftLog(cfg.log_path)
+    poller1 = DraftPoller(lambda: picks1, resolve, TEAM_SLOTS, log1)
+    s1 = DraftSession(cfg, _pool(), _priors(), poller1, ModeMachine(), log1, clock)
+    s1.tick()  # logs pick overall 1
+
+    # Resume: session owns the single handle; attach a poller built from it.
+    resumed = DraftSession.resume(cfg, _pool(), _priors(), ModeMachine(), clock)
+    picks2 = [
+        _pick_payload(1, 1, "461.l.1.t.1", "yp1"),
+        _pick_payload(2, 1, "461.l.1.t.2", "yp2"),
+    ]
+    resumed.attach_poller(DraftPoller(lambda: picks2, resolve, TEAM_SLOTS, resumed.log))
+
+    # Session writes mode events; poller writes a new pick -- all on one handle.
+    resumed.set_mode("manual")  # mode event
+    resumed.set_mode("live")  # mode event (back to LIVE so tick polls)
+    clock.advance(100)
+    resumed.tick()  # poller logs pick overall 2 (overall 1 already in _seen)
+
+    _, events, torn = DraftLog.replay(cfg.log_path)
+    assert torn is False
+    seqs = [e.seq for e in events]
+    assert seqs == list(range(1, len(seqs) + 1))  # strictly increasing, no dupes
+    pick_overalls = sorted(e.payload["overall"] for e in events if e.kind == "pick")
+    assert pick_overalls == [1, 2]  # overall 1 not re-logged on resume
+
+
+def test_fresh_start_refuses_non_empty_log(tmp_path):
+    """A fresh construction onto a populated log fails loud -- it is resume()'s
+    job alone (this also forecloses the dual-handle race)."""
+    cfg = _cfg(tmp_path, our_position=1, our_slot=1)
+    clock = FakeClock()
+    pool = _pool(named={"QB": ["Josh Allen"]})
+    s1 = _session(cfg, pool, _priors(), None, ModeMachine(mode=Mode.MANUAL), clock)
+    s1.manual_pick("josh allen")
+
+    with pytest.raises(ValueError) as exc:
+        DraftSession(
+            cfg, pool, _priors(), None, ModeMachine(), DraftLog(cfg.log_path), clock
+        )
+    assert "resume" in str(exc.value).lower()
+
+
+def test_undo_refuses_polled_pick(tmp_path):
+    """Undoing a polled pick locally would desync from Yahoo -- refused, with a
+    message pointing at MANUAL mode, and state left unchanged."""
+    cfg = _cfg(tmp_path)
+    clock = FakeClock()
+    picks = [_pick_payload(1, 1, "461.l.1.t.1", "yp1")]
+    resolve = _resolver({"yp1": ("QB0", "QB Player 0", "QB")})
+    log = DraftLog(cfg.log_path)
+    poller = DraftPoller(lambda: picks, resolve, TEAM_SLOTS, log)
+    session = DraftSession(cfg, _pool(), _priors(), poller, ModeMachine(), log, clock)
+    session.tick()
+
+    before_clock = session.on_the_clock_overall()
+    with pytest.raises(ValueError) as exc:
+        session.undo_last()
+    assert "MANUAL" in str(exc.value)
+    assert session.on_the_clock_overall() == before_clock  # unchanged
+    assert not any(
+        "QB Player 0" in ln for ln in session.board_lines("QB")
+    )  # still taken
+
+
+def test_manual_then_poll_same_overall_no_double_count(tmp_path):
+    """Operator manually enters overall 1, then the poll reports overall 1
+    (Yahoo's truth): the pick dict is keyed by overall, so poll overwrites --
+    no double advance, no double-count -- and BOTH events are in the log."""
+    cfg = _cfg(tmp_path, our_position=1, our_slot=1)
+    clock = FakeClock()
+    picks = [_pick_payload(1, 1, "461.l.1.t.1", "yp1")]
+    resolve = _resolver({"yp1": ("QB0", "QB Player 0", "QB")})
+    log = DraftLog(cfg.log_path)
+    poller = DraftPoller(lambda: picks, resolve, TEAM_SLOTS, log)
+    pool = _pool(named={"RB": ["Bijan Robinson"]})
+    session = DraftSession(cfg, pool, _priors(), poller, ModeMachine(), log, clock)
+
+    session.manual_pick("bijan")  # overall 1, manual (position 1 = us)
+    assert session.on_the_clock_overall() == 2
+
+    clock.advance(100)
+    session.tick()  # poll reports overall 1 -> overwrites the manual entry
+    assert session.on_the_clock_overall() == 2  # NOT 3 -- no double advance
+
+    _, events, _ = DraftLog.replay(cfg.log_path)
+    at_1 = [e for e in events if e.kind == "pick" and e.payload["overall"] == 1]
+    assert {e.payload["source"] for e in at_1} == {"manual", "poll"}  # both logged
+
+    roster = [ln for ln in session.status_lines() if "Our roster" in ln][0]
+    assert "1 picks" in roster and "QB:1" in roster and "RB" not in roster  # poll won

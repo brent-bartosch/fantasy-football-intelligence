@@ -86,6 +86,7 @@ class DraftSession:
         machine: ModeMachine,
         log: DraftLog,
         clock=time.monotonic,
+        _resuming: bool = False,
     ):
         self.cfg = cfg
         self.pool = pool
@@ -107,6 +108,16 @@ class DraftSession:
         if not existing:
             self._append_meta()  # META-FIRST is the session's convention to enforce
         else:
+            # A fresh construction must never open onto an already-populated
+            # log: it would replay someone else's draft, and (worse) a second
+            # DraftLog handle would race the poller's _next_seq and corrupt the
+            # file. Reconstructing a populated log is `resume()`'s job alone.
+            if not _resuming:
+                raise ValueError(
+                    f"log {self.cfg.log_path} already has {len(existing)} event(s) "
+                    "-- refusing a fresh start on a non-empty log. Pass --resume to "
+                    "continue this draft, or --log-path to start a new one."
+                )
             if existing[0].kind != "meta":
                 raise ValueError(
                     f"log {self.cfg.log_path} does not start with a meta event "
@@ -137,24 +148,34 @@ class DraftSession:
         self._meta = payload
 
     @classmethod
-    def resume(
-        cls, cfg, pool, priors, poller, machine, clock=time.monotonic
-    ) -> "DraftSession":
-        """Rebuild a session from its on-disk log (replay). State, mode, and
-        the torn-tail flag all come from the log; `machine`'s incoming mode is
-        overridden by the log's last mode event."""
+    def resume(cls, cfg, pool, priors, machine, clock=time.monotonic) -> "DraftSession":
+        """Rebuild a session from its on-disk log (replay). The session OWNS
+        the single DraftLog handle this returns (`session.log`); state, mode,
+        and the torn-tail flag all come from it, and `machine`'s incoming mode
+        is overridden by the log's last mode event.
+
+        A live poller is NOT passed here -- it must be built from `session.log`
+        and attached via `attach_poller`, so exactly one DraftLog handle (one
+        `_next_seq` counter) ever writes the file. Two handles would race and
+        corrupt the seq sequence, which the next resume refuses to load."""
         log, _events, _torn = DraftLog.replay(cfg.log_path)
-        session = cls(cfg, pool, priors, poller, machine, log, clock)
-        # Seed the poller's dedupe set so a resumed live poll does not re-log
-        # picks already durable in the log (the poller starts with an empty
-        # `_seen`; Task 11 leaves seeding to the session).
-        if poller is not None:
-            poller._seen = {
-                o
-                for o, p in session._state.picks_by_overall.items()
-                if p.get("source") == "poll"
-            }
-        return session
+        return cls(cfg, pool, priors, None, machine, log, clock, _resuming=True)
+
+    def attach_poller(self, poller: DraftPoller) -> None:
+        """Attach the live poller after construction, seeding its dedupe set
+        from picks already durable in the log so an attached/resumed poll never
+        re-logs them (the poller starts with an empty `_seen`; Task 11 leaves
+        seeding to the session).
+
+        Contract: `poller` MUST have been built from THIS session's `self.log`.
+        One DraftLog handle per process -- a poller wired to a second handle
+        races this session's `_next_seq` and corrupts the log."""
+        self.poller = poller
+        poller._seen = {
+            o
+            for o, p in self._state.picks_by_overall.items()
+            if p.get("source") == "poll"
+        }
 
     def _rebuild(self) -> None:
         self._state = derive_state(
