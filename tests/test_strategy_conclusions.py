@@ -31,15 +31,31 @@ def test_perfect_disagreement_rho_minus_one():
 
 def test_matches_live_r7_ordering():
     """The exact 6-plan orderings this deliverable reports (farm defk=18 tb=0
-    vs the in-memory backtest composite) must reduce to rho ~= 0.20 -- the
-    number the doc's Section 4 is written around. Guards against a silent
-    regression in the stat if the tables are ever regenerated."""
-    farm = {0: 0.6970, 1: 0.7124, 2: 0.7271, 3: 0.7283, 4: 0.7001, 5: 0.7040}
-    backtest = {0: 0.5242, 1: 0.5615, 2: 0.5552, 3: 0.5502, 4: 0.5508, 5: 0.5802}
+    vs the in-memory backtest composite) must reduce to rho ~= 0.60 -- the
+    number the doc's Section 4 / post-calibration addendum is written around.
+    Guards against a silent regression in the stat if the tables are ever
+    regenerated. Values are the calibrated-opponent regeneration (Phase 4
+    Task 5, farm git ece1500); the pre-calibration ordering gave rho 0.20."""
+    farm = {
+        0: 0.700734,
+        1: 0.710938,
+        2: 0.723679,
+        3: 0.723714,
+        4: 0.700885,
+        5: 0.711323,
+    }
+    backtest = {
+        0: 0.530563,
+        1: 0.560195,
+        2: 0.570022,
+        3: 0.554870,
+        4: 0.550844,
+        5: 0.604026,
+    }
     out = spearman_agreement(farm, backtest)
-    assert out["rho"] == pytest.approx(0.20, abs=1e-9)
-    # Both methods rank the front-loaded plan 0 WORST (rank 1) -- the one
-    # cross-method agreement the QB conclusion leans on.
+    assert out["rho"] == pytest.approx(0.60, abs=1e-9)
+    # Both methods still rank the front-loaded plan 0 WORST (rank 1) -- the one
+    # cross-method agreement the QB conclusion leans on, unchanged by calibration.
     assert out["farm_ranks"][0] == 1
     assert out["backtest_ranks"][0] == 1
 

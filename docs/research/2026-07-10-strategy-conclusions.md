@@ -11,6 +11,20 @@ vintage-locked to the generated block dated 2026-07-10 below; if the script is
 re-run and the block's numbers change, this prose must be re-checked against
 the new numbers before being trusted.**
 
+> **Post-calibration update (2026-07-10, git ece1500).** The evidence block was
+> regenerated on the CALIBRATED opponent model (Phase 4 Task 4:
+> `pos_need_scale=(2.0,1.5,0.5)`; sim opponents now take QB1 at ~1.77 vs the
+> earlier ~2.8). Sections 1-5 below are the PRE-calibration reasoning and their
+> inline figures reflect that earlier block; the numbered **headline
+> recommendations survive** and the QB-timing verdicts are re-adjudicated
+> against the new numbers in **"Addendum 2026-07-10: post-calibration
+> re-verification"** just above the evidence block. What changed in the block:
+> R7 Spearman **0.20 -> 0.60** (now above the 0.4 material-transfer bar --
+> headline 4 updated in place); DEF/K delta-vs-earliest 4.8% -> 4.5% (still
+> monotonic later-is-better, verdict unchanged); tier-break delta −0.1% ->
+> +0.1% (still within noise, verdict unchanged). See the addendum and
+> `2026-07-10-opponent-calibration.md`.
+
 **The one integrity rule this whole doc obeys:** the sim farm scores seasons in
 a Monte-Carlo evaluator that OVER-rewards our own seat (farm all-play% clusters
 0.64-0.73; the backtest against ACTUAL 2023-25 points sits at ~0.53). So no
@@ -25,7 +39,7 @@ cited at all.
 1. **QB: build a 2-QB core; do NOT front-load a 3-QB hoard early.** Take QB1 when VORP dictates (typically R1-2 in this superflex/2-QB league), but do not reach to stack 2-3 QBs in the first handful of rounds. Confidence: moderate-high on "don't front-load," lower on exactly how much to delay.
 2. **DEF/K: draft them in the last ~5-6 rounds (round 14-18) or stream -- not early.** This REVISES Phase 2's "draft early" verdict at the level of *action*. Confidence: high that round 8-11 is wrong; moderate on 14 vs 18.
 3. **Tier-break bonus: drop it (keep `tier_break_bonus=0.0`).** No measurable benefit; the effect is -0.1% (within noise). Confidence: high.
-4. **Sim-vs-reality transfer of QB fine-ordering is weak (Spearman 0.20).** Trust only the coarse agreement (front-loading QB is worst) and rank the backtest above the sim for QB-timing fine-tuning.
+4. **Sim-vs-reality transfer of QB ordering is now MODERATE (Spearman 0.60), up from 0.20 after opponent calibration -- above the 0.4 "material transfer" bar.** Both methods rank front-loading QB worst AND both now put a QB1-early 2-QB build near the top; they still disagree only on how far to delay QB1 (the farm favors maximum delay; the backtest favors the early-QB1 2-QB core). The methods now materially agree, so the earlier blanket "rank the backtest above the sim" no longer applies -- but where they still diverge (degree of delay) the real-points backtest remains the tie-breaker, and it does not reward maximum delay. See the post-calibration addendum.
 
 ---
 
@@ -204,11 +218,83 @@ p-value no power; the rank agreement, not the p-value, is the signal.)
 
 ---
 
+## Addendum 2026-07-10: post-calibration re-verification
+
+Sections 1 and 4 were written when the sim's opponents took QB1 at mean round
+~2.8 -- a full round later than the league's historical 1.83 -- which was the
+single biggest asterisk on the QB-timing policy. Phase 4 Task 4 calibrated the
+opponent model (`pos_need_scale=(2.0,1.5,0.5)`, see
+`2026-07-10-opponent-calibration.md`): sim opponents now take QB1 at ~1.77
+(uniform audit) / ~1.73 (fit sample), matching history. The evidence block below
+was regenerated on that calibrated model. This addendum re-adjudicates the three
+questions the calibration could have moved. **The bottom line: every headline
+recommendation survives, and the QB policy is now BETTER grounded, not worse.**
+
+**(a) Does "don't front-load QB" survive? YES -- robustly, unchanged.** Both
+methods still rank qb_plan 0 (`qb_not_before=(1,1,1)`, take QBs as raw VORP
+dictates = front-load all three) **worst of the six** (farm rank 1, backtest
+rank 1). This was the one cross-method agreement pre-calibration and it is
+untouched. The backtest's *second*-worst is now qb_plan 4 (`(1,2,4)` -- an early
+3-QB hoard), so the two most hoard-early plans occupy the backtest's bottom two:
+the "don't front-load a hoard" signal is if anything cleaner than before.
+
+**(b) Does the farm still prefer aggressive delay, does the backtest still
+refuse to corroborate -- and does the OPTIMISTIC flag clear, tighten, or
+reverse? It TIGHTENS (does not clear, does not reverse).** The farm still ranks
+the most-aggressive-delay plan (qb_plan 3, `qb_not_before=(3,6,10)`) best (farm
+rank 6), exactly as before. The backtest still declines to crown aggressive
+delay -- its top plan is qb_plan 5 (`(1,4,99)`: QB1 whenever VORP says, 2-QB
+core, no 3rd QB; backtest rank 6, QB1 in round 1 all three seasons), with the
+light stagger qb_plan 2 (`(2,5,9)`) second (rank 5). So reality's favorite is a
+**QB1-early 2-QB build -- the headline recommendation almost verbatim** -- not
+maximum delay. But the disagreement has narrowed on two fronts: (i) the overall
+rank agreement rose **Spearman 0.20 -> 0.60**, crossing the 0.4 material-transfer
+bar; and (ii) the backtest moved the farm's favorite (qb_plan 3) from
+2nd-*worst* pre-calibration up to the **middle** (backtest rank 3) now. In plain
+terms: with opponents grabbing QB1 a full round earlier, the sim and the real
+draft now largely agree, and the sim's old over-reward for waiting is no longer
+actively contradicted by reality -- it is just not *endorsed* as the optimum.
+The policy is unchanged: **don't front-load; build the 2-QB core; take QB1 when
+VORP says (early is fine); do not push QB1 delay to the extreme.**
+
+**(c) New R7 Spearman: 0.60** (p=0.208, n=6 -- still low power; read the rank
+agreement, not the p-value), up from 0.20. Above the 0.4 bar for the first time.
+
+### What the calibration changed about the caveats
+
+- **The binding Section-1 caveat is RESOLVED.** "Sim opponents take QB1 at 2.84
+  vs 1.83, so delayed-QB strategies look safer in sim than in your real draft"
+  no longer holds -- calibrated opponents take QB1 at ~1.77, matching the room.
+  The reason to not over-delay is now the direct evidence above (the backtest
+  rewards a QB1-early 2-QB build), not a known sim bias.
+- **A smaller residual replaces it, pointing the OTHER way (on the 3rd QB).** The
+  fit could match QB1/QB2 but not QB3: sim opponents take a 3rd QB at round 8.86
+  vs the room's 10.78 -- **~2 rounds EARLIER** (a documented mechanism limit, not
+  a tuning miss). So the sim now OVERSTATES third-QB scarcity: in simulation your
+  planned 3rd QB gets sniped earlier than it really would, making a delayed or
+  skipped 3rd QB look *riskier in sim than in reality*. This cuts in favor of
+  "let the 3rd QB come late, or not at all" -- the backtest's own top plan takes
+  no 3rd QB at all. If anything the real room gives you MORE room to wait on QB3
+  than the sim shows.
+- **Our seat was not degraded by the calibration.** The D7 gate passed with
+  calibrated opponents (our-seat composite 0.5330 vs reference 0.5297, band
+  0.0196); opponents taking QBs earlier did not cost our measured all-play. Full
+  chain in `2026-07-10-opponent-calibration.md` §6.
+
+**Net effect on the headline recommendations:** #1 (2-QB core, don't front-load)
+stands and is better supported -- the backtest now positively favors the
+recommended build. #2 (DEF/K late) and #3 (drop tier-break) are unchanged; their
+block numbers refreshed within noise (DEF/K still monotonically later-is-better,
++4.5% across the range; tier-break +0.1%, still nothing). #4 was updated in place
+for the 0.20 -> 0.60 Spearman.
+
+---
+
 <!-- BEGIN GENERATED EVIDENCE (scripts/strategy_conclusions.py) -->
 
-_Generated 2026-07-10T12:47:52 from farm run dated 2026-07-10 (git 652d1b4119ea902d2db9ba1c900a64608ec63489)._
+_Generated 2026-07-10T20:25:56 from farm run dated 2026-07-10 (git ece15009a56db6005ef7a67ed30d2461fd77b15e)._
 
-_Data vintage: ADP snapshot #6 (5.15h old at farm time), valuation computed 2026-07-10T09:05:21.468303-07:00, priors latest_season 2025, degraded=False._
+_Data vintage: ADP snapshot #6 (13.13h old at farm time), valuation computed 2026-07-10T09:05:21.468303-07:00, priors latest_season 2025, degraded=False._
 
 ### Farm QB-policy (qb_subgrid, defk_round=14) -- all-play% by qb_plan x scenario
 
@@ -216,24 +302,24 @@ _Cross-cell deltas only; absolute levels are MC-inflated (see doc caveats)._
 
 | qb_plan | qb_not_before | qb_by_round | scenario | all-play% | +/- 1.96se |
 |---|---|---|---|---|---|
-| 0 | (1, 1, 1) | (1, 4, 9) | qb_hoard_0 | 70.4% | +/- 0.4% |
-| 0 | (1, 1, 1) | (1, 4, 9) | qb_hoard_12 | 69.1% | +/- 0.4% |
-| 0 | (1, 1, 1) | (1, 4, 9) | qb_hoard_24 | 68.6% | +/- 0.5% |
+| 0 | (1, 1, 1) | (1, 4, 9) | qb_hoard_0 | 70.6% | +/- 0.3% |
+| 0 | (1, 1, 1) | (1, 4, 9) | qb_hoard_12 | 68.5% | +/- 0.4% |
+| 0 | (1, 1, 1) | (1, 4, 9) | qb_hoard_24 | 69.3% | +/- 0.4% |
 | 1 | (1, 3, 6) | (2, 5, 9) | qb_hoard_0 | 71.5% | +/- 0.4% |
-| 1 | (1, 3, 6) | (2, 5, 9) | qb_hoard_12 | 70.0% | +/- 0.5% |
-| 1 | (1, 3, 6) | (2, 5, 9) | qb_hoard_24 | 70.6% | +/- 0.4% |
-| 2 | (2, 5, 9) | (3, 6, 10) | qb_hoard_0 | 71.8% | +/- 0.4% |
-| 2 | (2, 5, 9) | (3, 6, 10) | qb_hoard_12 | 71.3% | +/- 0.4% |
-| 2 | (2, 5, 9) | (3, 6, 10) | qb_hoard_24 | 71.4% | +/- 0.4% |
-| 3 | (3, 6, 10) | (4, 8, 12) | qb_hoard_0 | 71.9% | +/- 0.4% |
-| 3 | (3, 6, 10) | (4, 8, 12) | qb_hoard_12 | 71.6% | +/- 0.4% |
-| 3 | (3, 6, 10) | (4, 8, 12) | qb_hoard_24 | 71.9% | +/- 0.4% |
-| 4 | (1, 2, 4) | (2, 4, 6) | qb_hoard_0 | 70.7% | +/- 0.4% |
-| 4 | (1, 2, 4) | (2, 4, 6) | qb_hoard_12 | 68.8% | +/- 0.5% |
-| 4 | (1, 2, 4) | (2, 4, 6) | qb_hoard_24 | 69.2% | +/- 0.5% |
-| 5 | (1, 4, 99) | (2, 7, 19) | qb_hoard_0 | 71.2% | +/- 0.4% |
-| 5 | (1, 4, 99) | (2, 7, 19) | qb_hoard_12 | 70.4% | +/- 0.5% |
-| 5 | (1, 4, 99) | (2, 7, 19) | qb_hoard_24 | 70.2% | +/- 0.4% |
+| 1 | (1, 3, 6) | (2, 5, 9) | qb_hoard_12 | 70.3% | +/- 0.4% |
+| 1 | (1, 3, 6) | (2, 5, 9) | qb_hoard_24 | 70.3% | +/- 0.5% |
+| 2 | (2, 5, 9) | (3, 6, 10) | qb_hoard_0 | 71.7% | +/- 0.4% |
+| 2 | (2, 5, 9) | (3, 6, 10) | qb_hoard_12 | 71.1% | +/- 0.4% |
+| 2 | (2, 5, 9) | (3, 6, 10) | qb_hoard_24 | 71.5% | +/- 0.4% |
+| 3 | (3, 6, 10) | (4, 8, 12) | qb_hoard_0 | 71.8% | +/- 0.4% |
+| 3 | (3, 6, 10) | (4, 8, 12) | qb_hoard_12 | 71.3% | +/- 0.4% |
+| 3 | (3, 6, 10) | (4, 8, 12) | qb_hoard_24 | 71.5% | +/- 0.4% |
+| 4 | (1, 2, 4) | (2, 4, 6) | qb_hoard_0 | 70.8% | +/- 0.4% |
+| 4 | (1, 2, 4) | (2, 4, 6) | qb_hoard_12 | 69.1% | +/- 0.5% |
+| 4 | (1, 2, 4) | (2, 4, 6) | qb_hoard_24 | 68.8% | +/- 0.4% |
+| 5 | (1, 4, 99) | (2, 7, 19) | qb_hoard_0 | 72.1% | +/- 0.4% |
+| 5 | (1, 4, 99) | (2, 7, 19) | qb_hoard_12 | 70.9% | +/- 0.4% |
+| 5 | (1, 4, 99) | (2, 7, 19) | qb_hoard_24 | 70.9% | +/- 0.4% |
 
 ### Farm DEF/K policy (main grid, scenario qb_hoard_12) -- all-play% by defk_round
 
@@ -241,34 +327,34 @@ _defk_round = round at which DEF is force-drafted (K at defk_round+1) if still u
 
 | defk_round | mean all-play% | n cells | delta vs earliest |
 |---|---|---|---|
-| 8 | 66.3% | 12 | +0.0% |
-| 11 | 68.0% | 12 | +1.7% |
-| 14 | 70.1% | 12 | +3.8% |
-| 18 | 71.1% | 12 | +4.8% |
+| 8 | 66.8% | 12 | +0.0% |
+| 11 | 68.6% | 12 | +1.8% |
+| 14 | 70.4% | 12 | +3.7% |
+| 18 | 71.3% | 12 | +4.5% |
 
 ### Farm tier-break delta (main grid)
 
 | tier_break_bonus | mean all-play% | n cells |
 |---|---|---|
-| 0.0 | 69.0% | 24 |
-| 8.0 | 68.8% | 24 |
+| 0.0 | 69.2% | 24 |
+| 8.0 | 69.3% | 24 |
 
-Delta (tier_break=8.0 minus tier_break=0.0): -0.1%
+Delta (tier_break=8.0 minus tier_break=0.0): +0.1%
 
 ### R7 sim-vs-backtest agreement (QB timing, defk_round=18)
 
-Spearman rho over the 6 common QB plans: **0.200** (p=0.704, n=6 -- low power; read the rank agreement, not the p-value).
+Spearman rho over the 6 common QB plans: **0.600** (p=0.208, n=6 -- low power; read the rank agreement, not the p-value).
 
 Farm side = today's main-grid all-play% at defk_round=18, tier_break=0.0 (matched to the backtest default). Backtest side = the SAME 6 (qb_not_before, qb_by_round) plans re-run in memory through ffi.sim.backtest: 3 seasons x 100 seeded drafts, scored on ACTUAL nflverse points, defk_round=18, DEF neutralized. NOTHING persisted; the ADR D7 reference is untouched.
 
 | qb_plan | qb_not_before | farm all-play% | farm rank* | backtest composite | backtest rank* | bt per-season (23/24/25) | bt QB1-round |
 |---|---|---|---|---|---|---|---|
-| 0 | (1, 1, 1) | 69.7% | 1 | 52.4% | 1 | 49/55/52 | 1/1/1 |
-| 1 | (1, 3, 6) | 71.2% | 4 | 56.1% | 5 | 49/61/58 | 1/1/1 |
-| 2 | (2, 5, 9) | 72.7% | 5 | 55.5% | 4 | 51/52/63 | 2/2/2 |
-| 3 | (3, 6, 10) | 72.8% | 6 | 55.0% | 2 | 46/53/66 | 3/3/3 |
-| 4 | (1, 2, 4) | 70.0% | 2 | 55.1% | 3 | 52/57/56 | 1/1/1 |
-| 5 | (1, 4, 99) | 70.4% | 3 | 58.0% | 6 | 54/58/62 | 1/1/1 |
+| 0 | (1, 1, 1) | 70.1% | 1 | 53.1% | 1 | 49/57/53 | 1/1/1 |
+| 1 | (1, 3, 6) | 71.1% | 3 | 56.0% | 4 | 51/56/61 | 1/1/1 |
+| 2 | (2, 5, 9) | 72.4% | 5 | 57.0% | 5 | 50/53/69 | 2/2/2 |
+| 3 | (3, 6, 10) | 72.4% | 6 | 55.5% | 3 | 46/52/68 | 3/3/3 |
+| 4 | (1, 2, 4) | 70.1% | 2 | 55.1% | 2 | 49/60/56 | 1/1/1 |
+| 5 | (1, 4, 99) | 71.1% | 4 | 60.4% | 6 | 55/60/66 | 1/1/1 |
 
 _*rank 1 = worst all-play% within its own method (6 = best). Both methods independently rank qb_plan 0 (front-load QB, qb_not_before=(1,1,1)) WORST; beyond that the fine ordering diverges -- see the hand-written adjudication above._
 

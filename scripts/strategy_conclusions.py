@@ -82,15 +82,48 @@ def _fmt_pct(x) -> str:
 # Farm evidence (today's kind='farm' batches)
 # ---------------------------------------------------------------------------
 
+# A single farm date can carry more than one vintage of cells (Phase 4 Task 4:
+# the pre-calibration nightly at base_seed 20260710 / git 652d1b41 AND the
+# calibrated re-run at base_seed 20260711 / git ece1500 both live under
+# 2026-07-10). The nightly recorded no `pos_need_scale` in opponent_params; the
+# calibrated run records `[["QB",[2.0,1.5,0.5]]]`. Reading by date alone would
+# MIX the two. We select the calibrated cells by requiring a non-null
+# `opponent_params->'pos_need_scale'` -- the semantic marker of a calibrated
+# run, robust to the arbitrary base_seed constant. `_assert_single_calibrated_
+# vintage` fails loud if more than one calibrated vintage exists for the date.
+CALIBRATED_FARM_PREDICATE = "b.opponent_params->'pos_need_scale' IS NOT NULL"
+
+
+def _assert_single_calibrated_vintage(conn, date) -> None:
+    """Fail loud if the date carries zero, or more than one, calibrated farm
+    vintage -- either case would make the spliced evidence block ambiguous."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""SELECT DISTINCT b.git_sha, b.base_seed
+                FROM sim.batches b
+                WHERE b.kind='farm' AND b.started_at::date=%s
+                  AND {CALIBRATED_FARM_PREDICATE}""",
+            (date,),
+        )
+        vintages = cur.fetchall()
+    if len(vintages) != 1:
+        raise ValueError(
+            f"strategy_conclusions: expected exactly ONE calibrated farm vintage "
+            f"(non-null opponent_params->'pos_need_scale') for {date.isoformat()}, "
+            f"found {len(vintages)}: {vintages}. The evidence block would be "
+            f"ambiguous. Disambiguate the farm batches before regenerating."
+        )
+
 
 def _farm_metric_rows(conn, date, grid, metric):
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT b.strategy, r.value
+            f"""SELECT b.strategy, r.value
                FROM sim.batches b JOIN sim.batch_results r ON r.batch_id = b.batch_id
                WHERE b.kind='farm' AND b.started_at::date=%s
                  AND b.strategy->>'grid'=%s AND r.metric=%s
-                 AND b.scenario IS NOT NULL""",
+                 AND b.scenario IS NOT NULL
+                 AND {CALIBRATED_FARM_PREDICATE}""",
             (date, grid, metric),
         )
         return cur.fetchall()
@@ -99,9 +132,10 @@ def _farm_metric_rows(conn, date, grid, metric):
 def farm_provenance(conn, date) -> dict:
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT b.scenario, b.data_vintage, b.git_sha
+            f"""SELECT b.scenario, b.data_vintage, b.git_sha
                FROM sim.batches b
                WHERE b.kind='farm' AND b.started_at::date=%s
+                 AND {CALIBRATED_FARM_PREDICATE}
                ORDER BY b.batch_id LIMIT 1""",
             (date,),
         )
@@ -321,6 +355,7 @@ def r7_section(farm_by_plan: dict, bt_results: list[dict]) -> list[str]:
 
 
 def build_evidence_block(conn, date) -> str:
+    _assert_single_calibrated_vintage(conn, date)
     prov = farm_provenance(conn, date)
     v = prov["vintage"]
     farm_by_plan = farm_defk18_by_plan(conn, date)
