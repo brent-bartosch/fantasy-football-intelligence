@@ -303,10 +303,19 @@ take a 2nd DEF/K in the final round -- the reference cells were quietly
 exhibiting the exact demo-draft bug this task kills (confirmed directly: 100/100
 sampled seeds for REF strategy 0 replace a 2nd DEF/K with a bench WR under the
 new cap). Strategy ordering across all 4 REF strategies x 3 seasons is
-unchanged either way. Net verdict: the small win-rate cost is the accepted
-price of behavioral sanity, per this task's brief. (The 0.5330 composite cited
-in the post-calibration addendum below predates this change and now reads
-0.5310; not re-derived here -- out of this task's scope.)
+unchanged either way. **Net verdict: accepted -- and the measured cost is an
+evaluator artifact, not a real-world downside.** `evaluate_league` has NO
+waiver/streaming mechanism: a K/DEF bye week in-sim is an unavoidable zero
+unless a 2nd K/DEF sits on the bench, which is precisely why the old cap
+scored "free" insurance value. In the real league that bye is covered by a
+one-week waiver pickup (the standard practice this doc's own DEF/K-late
+policy in Section 2 already assumes), so the true cost of the cap is ~zero
+while the freed roster spot buys a real bench lottery ticket. The -0.39% is
+the no-waivers season model overpricing roster redundancy -- the same class of
+MC-evaluator limitation as the absolute-level inflation flagged in the
+integrity rule at the top of this doc. (The 0.5330 composite cited in the
+post-calibration addendum below predates this change and now reads 0.5310;
+not re-derived here -- out of this task's scope.)
 
 **Bench-discount decision, documented YAGNI:** with K/DEF capped at 1, the
 second-onesie failure mode this task targets is now structurally impossible,
