@@ -1,372 +1,286 @@
 #!/usr/bin/env python3
+"""Draft-day assistant — the plain-terminal shell (Phase 4 / Task 13).
+
+A dumb renderer over `ffi.draft.session.DraftSession`: all behavior lives in
+the headless core (testable/drillable without a terminal). This shell wires up
+preflight (board vintage, paper floor, and — for live mode — the Yahoo poller),
+then runs a `select.select` loop that calls `session.tick()` between operator
+inputs. No threads, no curses (YAGNI): a draft is slow enough for a 0.5s poll
+tick, and a plain terminal is what the rehearsal ladder (Task 17) drills.
+
+Retires the dead v1 (psycopg2/14-team/adjusted_rankings assistant); git history
+preserves it.
+
+Commands:
+  <enter> / r     refresh + recommendation for our (next) pick
+  p <name>        manual pick for the seat on the clock (fuzzy match)
+  u               undo the last (manual) pick
+  b [pos]         best available (overall, or one position)
+  s               status (mode, clock, our roster, vintage)
+  m live|manual|paper   operator mode set
+  q               quit
 """
-LMU Fantasy Football Draft Assistant
-Combines expert rankings, historical data, and scoring adjustments
-to provide real-time draft recommendations.
-"""
+import argparse
+import datetime
+import select
+import sys
+from pathlib import Path
 
-import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from datetime import datetime
-from typing import List, Dict, Set
-from dotenv import load_dotenv
+from ffi.db import connect
+from ffi.draft.modes import Mode, ModeMachine
+from ffi.draft.poller import DraftPoller, build_resolver
+from ffi.draft.session import (
+    AmbiguousPickError,
+    DraftSession,
+    SessionConfig,
+    write_paper_board,
+)
+from ffi.draft.state import DraftLog
+from ffi.ids import team_slot
+from ffi.scoring.config import load_config_v1
+from ffi.sim.pool import build_pool
+from ffi.sim.priors import build_slot_priors
+from ffi.yahoo_client import (
+    ensure_fresh_token,
+    get_league,
+    get_session,
+    yahoo_call,
+)
 
-load_dotenv()
+STALE_HOURS = 36  # ADR D2 — same threshold as run_sim_farm.build_data_vintage
 
-class DraftAssistant:
-    def __init__(self):
-        # Database connection
-        self.db_conn = psycopg2.connect(
-            dbname=os.getenv('DB_NAME', 'fantasy_football'),
-            user=os.getenv('DB_USER', 'brentbartosch'),
-            password=os.getenv('DB_PASSWORD', ''),
-            host=os.getenv('DB_HOST', 'localhost'),
-            port=os.getenv('DB_PORT', '5432')
+
+def _load_board(conn, scenario: str):
+    """SEAM (Task 15): the single board-load point. Today it is exactly
+    `build_pool`; Task 15 wraps this with signal-based `adjusted_pool` without
+    the caller changing. Keep all board loading behind this one function."""
+    return build_pool(conn, scenario)
+
+
+def check_board_vintage(conn, scenario: str, override_stale: bool) -> dict:
+    """ADR D2 staleness gate, mirroring `run_sim_farm.build_data_vintage`'s
+    query pattern: refuse (SystemExit) on a missing snapshot, a missing
+    valuation, or an ADP/valuation snapshot MISMATCH (always — that is silent
+    semantic drift, never overridable). A >36h-stale ADP snapshot refuses too,
+    but `--override-stale` downgrades that one case to a loud warning and marks
+    the returned vintage `degraded=True`."""
+    config_version = load_config_v1().version
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT snapshot_id, fetched_at FROM raw.sleeper_projections "
+            "WHERE week IS NULL ORDER BY snapshot_id DESC LIMIT 1"
         )
-        self.cursor = self.db_conn.cursor(cursor_factory=RealDictCursor)
-        
-        self.drafted_players = set()
-        self.my_team = []
-        self.current_round = 1
-        self.draft_position = 1
-        self.num_teams = 14
-    
-    def initialize_draft(self):
-        """Set up draft parameters"""
-        print("\n🏈 LMU FANTASY FOOTBALL DRAFT ASSISTANT")
-        print("="*60)
-        
-        # Get draft position
-        while True:
-            try:
-                self.draft_position = int(input("\nWhat's your draft position? (1-14): "))
-                if 1 <= self.draft_position <= 14:
-                    break
-                print("Please enter a number between 1 and 14")
-            except ValueError:
-                print("Please enter a valid number")
-        
-        print(f"\n✅ Draft position: #{self.draft_position}")
-        print(f"📊 League: 14 teams, PPR with bonuses")
-        print(f"🎯 Strategy: Value-based drafting with LMU scoring adjustments\n")
-    
-    def get_best_available(self, position: str = None, limit: int = 10) -> List[Dict]:
-        """Get best available players"""
-        
-        # Build the drafted players filter
-        drafted_filter = ""
-        if self.drafted_players:
-            drafted_names = "', '".join(self.drafted_players)
-            drafted_filter = f"AND ar.player_name NOT IN ('{drafted_names}')"
-        
-        position_filter = f"AND ar.position = '{position}'" if position else ""
-        
-        query = f"""
-            SELECT 
-                ar.player_name,
-                ar.position,
-                ar.your_league_rank as adj_rank,
-                ar.standard_rank as std_rank,
-                ar.rank_difference as value,
-                ar.standard_adp as adp,
-                ar.scoring_boost,
-                ar.notes
-            FROM adjusted_rankings ar
-            WHERE 1=1
-                {drafted_filter}
-                {position_filter}
-            ORDER BY ar.your_league_rank
-            LIMIT %s
-        """
-        
-        self.cursor.execute(query, (limit,))
-        return self.cursor.fetchall()
-    
-    def get_pick_recommendation(self) -> Dict:
-        """Get recommendation for current pick"""
-        
-        # Calculate current overall pick
-        if self.current_round % 2 == 1:  # Odd round (snake left)
-            current_pick = (self.current_round - 1) * self.num_teams + self.draft_position
-        else:  # Even round (snake right)
-            current_pick = self.current_round * self.num_teams - self.draft_position + 1
-        
-        print(f"\n📍 Round {self.current_round}, Pick {current_pick}")
-        print("-" * 40)
-        
-        # Get best available by position
-        recommendations = []
-        
-        for position in ['QB', 'RB', 'WR', 'TE']:
-            best = self.get_best_available(position, 3)
-            if best:
-                top_player = best[0]
-                
-                # Calculate reach/value
-                expected_pick = float(top_player['adp']) if top_player['adp'] else 999
-                reach = current_pick - expected_pick
-                
-                # Score the pick
-                value_score = top_player['value'] if top_player['value'] else 0
-                adp_score = -abs(reach) / 10  # Penalize reaches
-                position_need = self._calculate_position_need(position)
-                
-                total_score = value_score + adp_score + position_need
-                
-                recommendations.append({
-                    'player': top_player,
-                    'reach': reach,
-                    'total_score': total_score,
-                    'position_need': position_need
-                })
-        
-        # Sort by total score
-        recommendations.sort(key=lambda x: x['total_score'], reverse=True)
-        
-        return recommendations[0] if recommendations else None
-    
-    def _calculate_position_need(self, position: str) -> float:
-        """Calculate need for a position based on roster construction"""
-        
-        # Count current roster
-        position_counts = {'QB': 0, 'RB': 0, 'WR': 0, 'TE': 0}
-        for player in self.my_team:
-            if player['position'] in position_counts:
-                position_counts[player['position']] += 1
-        
-        # Target roster construction (adjust based on league)
-        targets = {
-            'QB': 2,   # 1 starter + 1 backup
-            'RB': 5,   # 2 starters + 2 flex + 1 bench
-            'WR': 5,   # 2 starters + 2 flex + 1 bench
-            'TE': 2    # 1 starter + 1 backup
-        }
-        
-        # Calculate need score
-        current = position_counts[position]
-        target = targets[position]
-        
-        if current >= target:
-            return -10  # Penalize if we have enough
-        elif current == 0 and position in ['RB', 'WR']:
-            return 15  # Bonus for first RB/WR
-        elif current == 0 and position == 'QB' and self.current_round > 5:
-            return 10  # Need a QB eventually
-        else:
-            return 5 * (target - current) / target
-    
-    def show_best_available(self):
-        """Display best available players"""
-        print("\n🎯 BEST AVAILABLE PLAYERS")
-        print("="*60)
-        
-        # Overall best
-        print("\n📊 Top 10 Overall:")
-        best = self.get_best_available(None, 10)
-        
-        print(f"{'Rank':<6} {'Player':<25} {'Pos':<5} {'ADP':<8} {'Value'}")
-        print("-"*55)
-        
-        for player in best:
-            value_symbol = "🔥" if player['value'] > 10 else "⭐" if player['value'] > 5 else ""
-            adp_str = f"{player['adp']:.1f}" if player['adp'] else "N/A"
-            value_str = f"+{player['value']}" if player['value'] > 0 else str(player['value'])
-            
-            print(f"{player['adj_rank']:<6} {player['player_name']:<25} "
-                  f"{player['position']:<5} {adp_str:<8} {value_str:<6} {value_symbol}")
-    
-    def mark_player_drafted(self, player_name: str, by_me: bool = False):
-        """Mark a player as drafted"""
-        
-        # Get player details
-        self.cursor.execute("""
-            SELECT player_name, position
-            FROM adjusted_rankings
-            WHERE LOWER(player_name) LIKE LOWER(%s)
-            LIMIT 1
-        """, (f"%{player_name}%",))
-        
-        player = self.cursor.fetchone()
-        
-        if player:
-            self.drafted_players.add(player['player_name'])
-            
-            if by_me:
-                self.my_team.append(player)
-                print(f"✅ Added {player['player_name']} ({player['position']}) to your team")
-            else:
-                print(f"❌ {player['player_name']} ({player['position']}) off the board")
-            
-            return True
-        else:
-            print(f"⚠️  Player '{player_name}' not found")
-            return False
-    
-    def show_my_team(self):
-        """Display current roster"""
-        print("\n👥 YOUR TEAM")
-        print("="*40)
-        
-        if not self.my_team:
-            print("No players drafted yet")
-            return
-        
-        # Group by position
-        by_position = {}
-        for player in self.my_team:
-            pos = player['position']
-            if pos not in by_position:
-                by_position[pos] = []
-            by_position[pos].append(player['player_name'])
-        
-        for position in ['QB', 'RB', 'WR', 'TE']:
-            if position in by_position:
-                print(f"\n{position}:")
-                for name in by_position[position]:
-                    print(f"  • {name}")
-    
-    def analyze_historical_picks(self):
-        """Show what players were typically drafted at this position historically"""
-        
-        if self.current_round % 2 == 1:
-            current_pick = (self.current_round - 1) * self.num_teams + self.draft_position
-        else:
-            current_pick = self.current_round * self.num_teams - self.draft_position + 1
-        
-        print(f"\n📚 HISTORICAL ANALYSIS FOR PICK #{current_pick}")
-        print("="*50)
-        
-        # Get historical picks in this range
-        pick_range = 3
-        
-        self.cursor.execute("""
-            SELECT 
-                p.player_name,
-                dp.overall_pick,
-                l.season_year,
-                COUNT(*) OVER (PARTITION BY p.player_name) as times_drafted
-            FROM draft_picks dp
-            JOIN players p ON dp.player_id = p.player_id
-            JOIN leagues l ON dp.league_id = l.league_id
-            WHERE l.league_name LIKE '%LMU%'
-                AND dp.overall_pick BETWEEN %s AND %s
-            ORDER BY l.season_year DESC, dp.overall_pick
-            LIMIT 20
-        """, (current_pick - pick_range, current_pick + pick_range))
-        
-        results = self.cursor.fetchall()
-        
-        if results:
-            print(f"\nPlayers drafted at picks {current_pick-pick_range} to {current_pick+pick_range}:")
-            print(f"{'Year':<6} {'Pick':<6} {'Player'}")
-            print("-"*40)
-            
-            for result in results:
-                print(f"{result['season_year']:<6} {result['overall_pick']:<6} {result['player_name']}")
-    
-    def run_draft(self):
-        """Main draft loop"""
-        self.initialize_draft()
-        
-        print("\n📝 DRAFT COMMANDS:")
-        print("  'best' - Show best available")
-        print("  'rec' - Get pick recommendation")
-        print("  'draft [player]' - Draft a player (you)")
-        print("  'taken [player]' - Mark player as drafted (other)")
-        print("  'team' - Show your team")
-        print("  'history' - Show historical picks")
-        print("  'next' - Move to next round")
-        print("  'quit' - Exit draft assistant")
-        
-        while True:
-            print(f"\n[Round {self.current_round}] > ", end="")
-            command = input().strip().lower()
-            
-            if command == 'quit':
-                break
-            
-            elif command == 'best':
-                self.show_best_available()
-            
-            elif command == 'rec':
-                rec = self.get_pick_recommendation()
-                if rec:
-                    player = rec['player']
-                    reach = rec['reach']
-                    
-                    print(f"\n🎯 RECOMMENDATION: {player['player_name']} ({player['position']})")
-                    print(f"   Adjusted Rank: #{player['adj_rank']}")
-                    print(f"   ADP: {player['adp']:.1f}" if player['adp'] else "   ADP: N/A")
-                    
-                    if reach < -10:
-                        print(f"   ⚠️  Reach by {-reach:.0f} picks")
-                    elif reach > 10:
-                        print(f"   💎 Value! Expected {reach:.0f} picks later")
-                    else:
-                        print(f"   ✅ Good value at current position")
-                    
-                    if player['notes']:
-                        print(f"   📝 {player['notes']}")
-            
-            elif command.startswith('draft '):
-                player_name = command[6:]
-                if self.mark_player_drafted(player_name, by_me=True):
-                    # Auto-advance if it's your pick
-                    if self.current_round % 2 == 1:
-                        if self.draft_position == 14:
-                            self.current_round += 1
-                    else:
-                        if self.draft_position == 1:
-                            self.current_round += 1
-            
-            elif command.startswith('taken '):
-                player_name = command[6:]
-                self.mark_player_drafted(player_name, by_me=False)
-            
-            elif command == 'team':
-                self.show_my_team()
-            
-            elif command == 'history':
-                self.analyze_historical_picks()
-            
-            elif command == 'next':
-                self.current_round += 1
-                print(f"➡️  Moving to Round {self.current_round}")
-            
-            else:
-                print("Unknown command. Type 'best', 'rec', 'draft [player]', 'taken [player]', 'team', 'history', 'next', or 'quit'")
-    
-    def close(self):
-        """Close database connection"""
-        if self.cursor:
-            self.cursor.close()
-        if self.db_conn:
-            self.db_conn.close()
+        row = cur.fetchone()
+        if row is None:
+            raise SystemExit(
+                "draft_assistant: no season-level Sleeper snapshot at all — run "
+                "`uv run python scripts/ingest_sleeper.py --season 2026` first"
+            )
+        adp_snapshot_id, adp_fetched_at = row
+        cur.execute(
+            "SELECT max((params->>'snapshot_id')::int), max(computed_at) "
+            "FROM valuation.player_value WHERE config_version=%s AND scenario=%s",
+            (config_version, scenario),
+        )
+        valuation_snapshot_id, valuation_computed_at = cur.fetchone()
 
-def main():
-    """Run the draft assistant"""
-    assistant = DraftAssistant()
-    
+    if valuation_snapshot_id is None:
+        raise SystemExit(
+            f"draft_assistant: no valuation.player_value rows for scenario={scenario!r} "
+            "— run `uv run python scripts/build_valuation.py` first"
+        )
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    age_hours = (now - adp_fetched_at).total_seconds() / 3600
+    degraded = False
+    if age_hours > STALE_HOURS:
+        if not override_stale:
+            raise SystemExit(
+                f"draft_assistant: season Sleeper snapshot {age_hours:.0f}h old "
+                f"(> {STALE_HOURS}h) — refusing to draft from stale ADP. Re-run "
+                "`uv run python scripts/ingest_sleeper.py --season 2026`, or pass "
+                "--override-stale to draft from it anyway (ADR D2)."
+            )
+        degraded = True
+        print(
+            f"WARNING: ADP snapshot is {age_hours:.0f}h old (> {STALE_HOURS}h); "
+            "--override-stale given — drafting from stale ADP (ADR D2)."
+        )
+
+    if valuation_snapshot_id != adp_snapshot_id:
+        raise SystemExit(
+            f"draft_assistant: valuation/ADP snapshot mismatch for scenario={scenario!r} "
+            f"— valuation built from {valuation_snapshot_id} but latest ADP is "
+            f"{adp_snapshot_id}. VORP/tier and ADP would be drawn from two different "
+            "Sleeper pulls. Rebuild: `uv run python scripts/build_valuation.py`."
+        )
+
+    return {
+        "adp_snapshot_id": adp_snapshot_id,
+        "adp_age_hours": round(age_hours, 2),
+        "valuation_snapshot_id": valuation_snapshot_id,
+        "valuation_computed_at": valuation_computed_at.isoformat(),
+        "degraded": degraded,
+    }
+
+
+def _live_team_slots(lg) -> dict:
+    """team_key -> franchise slot from Yahoo's live `lg.teams()` (the current
+    season's `teams` rows don't exist yet, so we can't use
+    `poller.load_team_slots`). Slot convention is `ffi.ids.team_slot`."""
+    teams = yahoo_call(lg.teams)
+    slots = {tk: team_slot(tk) for tk in teams}
+    if len(slots) != 12:
+        raise SystemExit(
+            f"draft_assistant: expected 12 teams from Yahoo, got {len(slots)}: "
+            f"{sorted(slots)}"
+        )
+    return slots
+
+
+def _build_live_poller(cfg: SessionConfig, conn, log: DraftLog) -> DraftPoller:
+    """Live Yahoo poller. NOTE: the live poll path (field-mapping of
+    `lg.draft_results` into the poller's pick dicts, real 999/auth behavior) is
+    exercised in Task 17's rehearsal drills — never here (this task makes zero
+    live Yahoo calls; the manual verification runs under --no-poll)."""
+    sc = get_session()
+    ensure_fresh_token(sc, margin_s=900)
+    lg = get_league(sc, cfg.league_key)
+    yahoo_call(lg.draft_results)  # one probe: confirm the endpoint answers
+    team_slots = _live_team_slots(lg)
+    resolve = build_resolver(conn)
+
+    def fetch():
+        ensure_fresh_token(sc, margin_s=900)  # ADR D4: proactive, every fetch
+        return yahoo_call(lg.draft_results)
+
+    return DraftPoller(fetch, resolve, team_slots, log)
+
+
+def _print(lines) -> None:
+    for ln in lines:
+        print(ln)
+
+
+def _dispatch(session: DraftSession, cmd: str) -> bool:
+    """Handle one operator command. Returns False to quit. Operator-facing
+    input errors (bad name, ambiguity, nothing to undo) are printed and the
+    loop continues; anything else propagates and crashes (fail-loud)."""
+    if cmd in ("", "r"):
+        _print(session.recommendation_lines())
+        return True
+    if cmd == "q":
+        return False
+    if cmd == "u":
+        try:
+            session.undo_last()
+            print("undone.")
+            _print(session.status_lines())
+        except ValueError as e:
+            print(f"! {e}")
+        return True
+    if cmd == "s":
+        _print(session.status_lines())
+        return True
+    if cmd == "b" or cmd.startswith("b "):
+        pos = cmd[2:].strip() or None
+        _print(session.board_lines(pos))
+        return True
+    if cmd.startswith("m "):
+        try:
+            _print(session.set_mode(cmd[2:].strip()))
+        except ValueError as e:
+            print(f"! {e}")
+        return True
+    if cmd.startswith("p "):
+        try:
+            picked = session.manual_pick(cmd[2:].strip())
+            print(f"drafted: {picked.name} ({picked.pos}) at overall {picked.overall}")
+            _print(session.recommendation_lines())
+        except (AmbiguousPickError, ValueError) as e:
+            print(f"! {e}")
+        return True
+    print(f"! unknown command {cmd!r} — try: <enter> p u b s m q")
+    return True
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Draft-day assistant")
+    ap.add_argument("--league-key", default="461.l.326814")
+    ap.add_argument(
+        "--our-slot", type=int, required=True, help="our franchise slot (1-12)"
+    )
+    ap.add_argument(
+        "--position", type=int, required=True, help="our draft position (1-12)"
+    )
+    ap.add_argument("--scenario", default="qb_hoard_12")
+    ap.add_argument("--resume", action="store_true", help="replay an existing log")
+    ap.add_argument("--no-poll", action="store_true", help="pure MANUAL, no Yahoo")
+    ap.add_argument(
+        "--override-stale", action="store_true", help="draft from >36h ADP (ADR D2)"
+    )
+    ap.add_argument("--log-path", type=Path, default=None)
+    args = ap.parse_args()
+
+    conn = connect()
+
+    # --- Preflight (ADR D4) ------------------------------------------------
+    vintage = check_board_vintage(conn, args.scenario, args.override_stale)
+    pool = _load_board(conn, args.scenario)
+    priors = build_slot_priors(conn)
+
+    cfg = SessionConfig(
+        league_key=args.league_key,
+        our_franchise_slot=args.our_slot,
+        our_position=args.position,
+        scenario=args.scenario,
+        log_path=args.log_path,
+        board_vintage=vintage,
+    )
+
+    # The PAPER floor is always written before the room opens (mode-independent).
+    paper_path = Path("reports") / f"paper-board-{datetime.date.today().isoformat()}.md"
+    write_paper_board(pool, paper_path)
+    print(f"paper board written: {paper_path}")
+
+    log = DraftLog(cfg.log_path)
+    if args.no_poll:
+        poller = None
+        machine = ModeMachine(mode=Mode.MANUAL)  # --no-poll: pure MANUAL floor
+    else:
+        poller = _build_live_poller(cfg, conn, log)
+        machine = ModeMachine()  # LIVE
+
+    if args.resume:
+        session = DraftSession.resume(cfg, pool, priors, poller, machine)
+    else:
+        session = DraftSession(cfg, pool, priors, poller, machine, log)
+
+    print(f"log: {cfg.log_path}")
+    _print(session.status_lines())
+    _print(session.recommendation_lines())
+    print(
+        "\ncommands: <enter>/r recommend · p <name> · u undo · b [pos] · s status · "
+        "m live|manual|paper · q quit\n"
+    )
+
+    # --- Loop --------------------------------------------------------------
     try:
-        assistant.run_draft()
-        
-        print("\n" + "="*60)
-        print("📊 DRAFT COMPLETE!")
-        print("="*60)
-        
-        assistant.show_my_team()
-        
+        running = True
+        while running:
+            _print(session.tick())
+            ready, _, _ = select.select([sys.stdin], [], [], 0.5)
+            if not ready:
+                continue
+            line = sys.stdin.readline()
+            if not line:  # EOF (piped input exhausted)
+                break
+            running = _dispatch(session, line.strip())
     except KeyboardInterrupt:
-        print("\n\n👋 Draft assistant closed")
-    
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-    
+        print("\nbye — log is durable; --resume to continue.")
     finally:
-        assistant.close()
+        conn.close()
+
 
 if __name__ == "__main__":
     main()

@@ -53,6 +53,9 @@ data/*.xlsx
 # ...but curated config (not bulk data) is tracked:
 !data/backtest_name_overrides.json
 
+# Live draft event logs (Task 13 — the draft-day source of truth; local only)
+data/draft-logs/
+
 # Temporary files
 tmp/
 temp/
