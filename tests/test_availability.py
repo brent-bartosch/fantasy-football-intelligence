@@ -102,3 +102,54 @@ def test_perf_budget(avail):
     elapsed = time.perf_counter() - start
 
     assert elapsed < 2.0, f"forecast_availability took {elapsed:.2f}s, budget 2.0s"
+
+
+def test_larger_cand_window_widens_survival_tracking(avail):
+    # Default cand_window (12) tracks survival only for the head 24 (=12*2)
+    # players per position; a deep QB (index 25) falls outside that. A
+    # caller-supplied cand_window=30 must widen tracking to 60 and cover it
+    # -- the window is derived from the EFFECTIVE params, not a fixed
+    # module constant.
+    priors = synthetic_priors()
+    deep_ref = avail["QB"][25].ref
+
+    baseline = forecast_availability(avail, priors, upcoming=[], n_rollouts=5, seed=1)
+    assert deep_ref not in baseline.survival
+
+    wide = forecast_availability(
+        avail,
+        priors,
+        upcoming=[],
+        n_rollouts=5,
+        seed=1,
+        opponent_params=OpponentParams(cand_window=30),
+    )
+    assert deep_ref in wide.survival
+    assert wide.survival[deep_ref] == 1.0
+
+
+def test_repeat_slot_divergent_counts_raises(avail):
+    # Slot 3 appears twice with two different claims about its own roster
+    # at the same simulated moment -- a caller bug, must fail loud.
+    priors = synthetic_priors()
+    upcoming = [(3, 1, {"QB": 0}), (5, 1, {}), (3, 2, {"QB": 1})]
+
+    with pytest.raises(ValueError, match="franchise_slot 3"):
+        forecast_availability(avail, priors, upcoming, n_rollouts=5, seed=1)
+
+
+def test_repeat_slot_consistent_counts_ok(avail):
+    # Same slot twice, same static counts snapshot both times (the caller
+    # can't know the outcome of its own first simulated pick) -- must NOT
+    # raise, and the simulator evolves its own working copy across the two.
+    priors = synthetic_priors()
+    upcoming = [(3, 1, {"QB": 0}), (5, 1, {}), (3, 2, {"QB": 0})]
+
+    f = forecast_availability(avail, priors, upcoming, n_rollouts=5, seed=1)
+    assert f.n_upcoming == 3
+
+
+def test_n_rollouts_must_be_positive(avail):
+    priors = synthetic_priors()
+    with pytest.raises(ValueError):
+        forecast_availability(avail, priors, upcoming=[], n_rollouts=0, seed=1)

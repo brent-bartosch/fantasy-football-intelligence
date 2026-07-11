@@ -20,32 +20,45 @@ the same rollout (e.g. draft positions 1 and 12 at a snake turn boundary) has
 its second pick see the first's effect. The caller's `avail_by_pos` lists and
 `upcoming` counts dicts are never mutated.
 
-`survival` is populated only for the head `CAND_WINDOW * 2` players of each
-position in the CALLER's `avail_by_pos` (deeper players are, by construction,
-never a plausible opponent target within one turn, so tracking their
-survival would bloat the dict for no signal). `expected_best_vorp`, by
-contrast, is computed from each rollout's live (post-simulated-picks)
-availability view directly, not restricted to the tracked window -- this is
-both correct and simpler than special-casing the window's edge.
+`survival` is populated only for the head `cand_window * 2` players of each
+position in the CALLER's `avail_by_pos`, where `cand_window` is the EFFECTIVE
+one (`opponent_params.cand_window` if given, else
+`DEFAULT_OPPONENT_PARAMS.cand_window`) -- deeper players are, by
+construction, never a plausible opponent target within one turn under that
+window, so tracking their survival would bloat the dict for no signal. This
+is derived fresh inside `forecast_availability` on every call (not a
+module-level constant) so a caller overriding `cand_window` gets matching
+survival coverage rather than silently truncated results.
+`expected_best_vorp`, by contrast, is computed from each rollout's live
+(post-simulated-picks) availability view directly, not restricted to the
+tracked window -- this is both correct and simpler than special-casing the
+window's edge.
 
 Empty `upcoming` (a back-to-back snake turn, e.g. draft position 12's
 round 1 -> round 2) short-circuits: nothing can be taken before our next
 pick, so `survival` is 1.0 for every tracked player, `expected_best_vorp`
 equals the current best, and `vona` is 0.0 everywhere.
+
+A franchise slot may appear more than once in `upcoming` (e.g. draft
+positions 1/12 pick twice back-to-back at a snake turn boundary). Since the
+caller cannot know the outcome of its own earlier simulated pick, every
+`upcoming` entry for the same slot must carry the SAME static `counts`
+snapshot (whatever the caller currently knows to be true); the simulator
+itself evolves a per-rollout working copy across that slot's repeat
+appearances (mirroring `ffi.sim.draft.run_draft`'s own bookkeeping). A
+mismatched later `counts` for an already-seen slot is a caller bug -- it
+would mean two different claims about the same seat's roster at the same
+point in time -- and raises `ValueError` naming the slot (fail-loud, not
+silently discarded).
 """
 from dataclasses import dataclass
 
 import numpy as np
 
 from ffi.sim.draft import ROUNDS, _avail_view
-from ffi.sim.opponent import CAND_WINDOW, opponent_pick
+from ffi.sim.opponent import DEFAULT_OPPONENT_PARAMS, opponent_pick
 from ffi.sim.pool import PoolPlayer
 from ffi.sim.priors import SlotPriors
-
-# Survival is tracked for the head this-many players per position -- deep
-# enough that no opponent could plausibly reach past it in one turn (twice
-# the stage-2 candidate window `opponent_pick` itself draws from).
-_SURVIVAL_WINDOW = CAND_WINDOW * 2
 
 
 @dataclass(frozen=True)
@@ -72,10 +85,16 @@ def forecast_availability(
 
     `avail_by_pos` must already be the live availability view (each
     position's list pre-sorted per `opponent_pick`'s contract). Never
-    mutates `avail_by_pos` or any `counts` dict inside `upcoming`.
+    mutates `avail_by_pos` or any `counts` dict inside `upcoming`. Raises
+    `ValueError` if `n_rollouts <= 0`, or if the same franchise slot appears
+    twice in `upcoming` with differing `counts` (see module docstring).
     """
+    if n_rollouts <= 0:
+        raise ValueError(f"n_rollouts must be positive, got {n_rollouts}")
+
+    survival_window = (opponent_params or DEFAULT_OPPONENT_PARAMS).cand_window * 2
     tracked: dict[str, list[str]] = {
-        pos: [p.ref for p in plist[:_SURVIVAL_WINDOW]]
+        pos: [p.ref for p in plist[:survival_window]]
         for pos, plist in avail_by_pos.items()
     }
     n_upcoming = len(upcoming)
@@ -92,16 +111,36 @@ def forecast_availability(
             expected_best_vorp=expected_best_vorp,
         )
 
+    # Repeat-slot counts must be internally consistent (see module docstring)
+    # -- validated once, up front, since it's a property of `upcoming` alone
+    # and doesn't depend on any rollout's random draws.
+    seed_counts: dict[int, dict] = {}
+    for franchise_slot, _round, counts in upcoming:
+        if franchise_slot in seed_counts:
+            if counts != seed_counts[franchise_slot]:
+                raise ValueError(
+                    f"upcoming has inconsistent counts for franchise_slot "
+                    f"{franchise_slot}: first occurrence had "
+                    f"{seed_counts[franchise_slot]!r}, a later occurrence had "
+                    f"{counts!r} -- repeat entries for the same slot must carry "
+                    "the same static counts snapshot; the simulator evolves its "
+                    "own per-rollout working copy across them"
+                )
+        else:
+            seed_counts[franchise_slot] = counts
+
     survive_counts = {ref: 0 for refs in tracked.values() for ref in refs}
     best_vorp_sums = {pos: 0.0 for pos in avail_by_pos}
 
     for k in range(n_rollouts):
         rng = np.random.default_rng(seed + k)
         taken: set = set()
-        rollout_counts: dict[int, dict] = {}
+        rollout_counts: dict[int, dict] = {
+            slot: dict(c) for slot, c in seed_counts.items()
+        }
 
-        for franchise_slot, round_, counts in upcoming:
-            seat_counts = rollout_counts.setdefault(franchise_slot, dict(counts))
+        for franchise_slot, round_, _counts in upcoming:
+            seat_counts = rollout_counts[franchise_slot]
             picks_left_after = ROUNDS - round_
             view = _avail_view(avail_by_pos, taken)
             pick = opponent_pick(

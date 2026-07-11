@@ -247,8 +247,10 @@ def main() -> None:
         run_measure(conn, args.drafts, args.seed)
     elif args.fit:
         run_fit(conn, args.drafts, args.seed)
-    else:
+    elif args.vona_smoke:
         run_vona_smoke(conn, args.seed)
+    else:
+        raise ValueError("no action selected (--measure/--fit/--vona-smoke)")
 
 
 if __name__ == "__main__":
