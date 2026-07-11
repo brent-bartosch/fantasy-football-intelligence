@@ -188,6 +188,22 @@ class TestApplyAdjustmentRefusals:
         db.commit()
         assert isinstance(adjustment_id, int)
 
+    def test_exactly_negative_ten_percent_is_allowed(self, db):
+        """Regression pin for migrations/008_signals_pct_cap_fix.sql: the
+        float4/double-precision boundary bug it fixed was symmetric --
+        `real`'s nearest representable value to -0.10 is MORE negative than
+        the double-precision -0.10 literal (same direction of drift as the
+        +0.10 case), so `pct >= -0.10` was silently false for pct == -0.10
+        exactly under the old (007) constraint. Only +0.10 was pinned above;
+        this pins the negative boundary too."""
+        xwalk_id = _seed_xwalk(db, "Player F2", fantasypros_id=62)
+        signal_id = _seed_signal(db, xwalk_id=xwalk_id)
+        db.commit()
+
+        adjustment_id = apply_adjustment(db, signal_id, -0.10)
+        db.commit()
+        assert isinstance(adjustment_id, int)
+
     def test_exactly_twenty_percent_cumulative_is_allowed(self, db):
         xwalk_id = _seed_xwalk(db, "Player G", fantasypros_id=7)
         old_signal_id = _seed_signal(db, xwalk_id=xwalk_id, title="old")

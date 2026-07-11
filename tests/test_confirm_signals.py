@@ -97,6 +97,28 @@ class TestConfirmSignal:
             cur.execute("SELECT count(*) FROM signals.adjustments")
             assert cur.fetchone()[0] == 0
 
+    def test_informational_confirm_on_nonexistent_id_raises(self, db):
+        """Regression: the UPDATE previously matched zero rows silently and
+        returned None, indistinguishable from a real informational confirm
+        -- a fat-fingered signal_id looked like it worked."""
+        with pytest.raises(ValueError, match="999999.*does not exist"):
+            confirm_signal(db, 999999, 0.0)
+
+    def test_informational_confirm_on_already_confirmed_id_raises(self, db):
+        signal_id = _seed_signal(db, status="confirmed")
+        db.commit()
+
+        with pytest.raises(ValueError, match="does not exist or is not pending"):
+            confirm_signal(db, signal_id, 0.0)
+
+    def test_confirm_with_pct_on_already_denied_id_raises(self, db):
+        xwalk_id = _seed_xwalk(db, "Player Z", 99)
+        signal_id = _seed_signal(db, xwalk_id=xwalk_id, status="denied")
+        db.commit()
+
+        with pytest.raises(ValueError, match="does not exist or is not pending"):
+            confirm_signal(db, signal_id, 0.05)
+
     def test_confirm_with_pct_applies_adjustment(self, db):
         xwalk_id = _seed_xwalk(db, "Player A", 10)
         signal_id = _seed_signal(db, xwalk_id=xwalk_id)

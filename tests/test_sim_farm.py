@@ -17,6 +17,18 @@ import sim_report
 from ffi.sim.calibrate import QbTimingMeasurement
 from ffi.sim.strategy import StrategyParams
 
+# Fixed sim-batch date for the render_report/main_for_date integration tests
+# below. `_seed_batch` pins `sim.batches.started_at`/`finished_at` to this
+# exact timestamp rather than letting the column fall back to its `now()`
+# default -- `sim_report.load_batches` filters `started_at::date = %s`, so a
+# fixture that relies on `now()` silently depends on the real wall-clock date
+# matching the hardcoded query date, and breaks the instant a test run
+# crosses a real calendar-day boundary (observed live: 2026-07-10 ->
+# 2026-07-11 mid-session broke all 7 tests below). One source of truth here;
+# change this constant, not the call sites.
+BATCH_DATE = datetime.date(2026, 7, 10)
+BATCH_STARTED_AT = datetime.datetime(2026, 7, 10, 12, 0, tzinfo=datetime.timezone.utc)
+
 # ---------------------------------------------------------------------------
 # Grid construction (72 cells, deterministic order, exact knob values)
 # ---------------------------------------------------------------------------
@@ -557,10 +569,16 @@ def _seed_batch(
             """INSERT INTO sim.batches
                (kind, git_sha, config_version, scenario, season, strategy,
                 opponent_params, n_drafts, seasons_per_draft, base_seed, data_vintage,
-                finished_at)
-               VALUES ('farm','deadbeef',1,%s,NULL,%s,'{}'::jsonb,200,20,20260710,%s,now())
+                started_at, finished_at)
+               VALUES ('farm','deadbeef',1,%s,NULL,%s,'{}'::jsonb,200,20,20260710,%s,%s,%s)
                RETURNING batch_id""",
-            (scenario, _json.dumps(strategy), _json.dumps(data_vintage)),
+            (
+                scenario,
+                _json.dumps(strategy),
+                _json.dumps(data_vintage),
+                BATCH_STARTED_AT,
+                BATCH_STARTED_AT,
+            ),
         )
         batch_id = cur.fetchone()[0]
         for metric, val in (
@@ -635,7 +653,7 @@ def test_render_report_includes_data_vintage_header(db, stub_audit):
         cell_idx=0,
         all_play_pct=0.55,
     )
-    report, _ok = sim_report.render_report(db, datetime.date(2026, 7, 10))
+    report, _ok = sim_report.render_report(db, BATCH_DATE)
     assert "data vintage" in report.lower() or "data-vintage" in report.lower()
     assert "42" in report  # snapshot id
     assert "deadbeef" in report  # git sha
@@ -662,7 +680,7 @@ def test_render_report_includes_qb_policy_table(db, stub_audit):
         all_play_pct=0.50,
         grid="qb_subgrid",
     )
-    report, _ok = sim_report.render_report(db, datetime.date(2026, 7, 10))
+    report, _ok = sim_report.render_report(db, BATCH_DATE)
     assert "QB" in report
     assert "0.55" in report or "55.0" in report
 
@@ -686,7 +704,7 @@ def test_render_report_defk_table_by_round(db, stub_audit):
         cell_idx=1,
         all_play_pct=0.53,
     )
-    report, _ok = sim_report.render_report(db, datetime.date(2026, 7, 10))
+    report, _ok = sim_report.render_report(db, BATCH_DATE)
     assert "defk_round" in report.lower() or "def/k" in report.lower()
 
 
@@ -700,7 +718,7 @@ def test_render_report_worst_drafts_narrative_present(db, stub_audit):
         cell_idx=0,
         all_play_pct=0.30,
     )
-    report, _ok = sim_report.render_report(db, datetime.date(2026, 7, 10))
+    report, _ok = sim_report.render_report(db, BATCH_DATE)
     assert "worst" in report.lower()
 
 
@@ -772,7 +790,7 @@ def test_render_report_exits_nonzero_when_batch_degraded(
         degraded=True,
     )
     with pytest.raises(SystemExit):
-        sim_report.main_for_date(db, datetime.date(2026, 7, 10))
+        sim_report.main_for_date(db, BATCH_DATE)
 
 
 def test_render_report_exits_zero_when_no_batch_degraded(
@@ -792,7 +810,7 @@ def test_render_report_exits_zero_when_no_batch_degraded(
         degraded=False,
     )
     # Should not raise.
-    out = sim_report.main_for_date(db, datetime.date(2026, 7, 10))
+    out = sim_report.main_for_date(db, BATCH_DATE)
     assert out.parent == tmp_path
 
 
@@ -817,9 +835,9 @@ def test_main_for_date_exits_nonzero_on_audit_regression(db, tmp_path, monkeypat
         degraded=False,
     )
     with pytest.raises(SystemExit, match="regression"):
-        sim_report.main_for_date(db, datetime.date(2026, 7, 10))
+        sim_report.main_for_date(db, BATCH_DATE)
     # report written before the exit
-    assert (tmp_path / "sim-farm-2026-07-10.md").exists()
+    assert (tmp_path / f"sim-farm-{BATCH_DATE.isoformat()}.md").exists()
 
 
 def test_render_report_raises_when_no_batches_for_date(db):

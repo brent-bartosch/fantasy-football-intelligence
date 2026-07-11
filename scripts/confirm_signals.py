@@ -75,6 +75,17 @@ def confirm_signal(conn, signal_id: int, pct: float, note: str = "") -> int | No
             "WHERE signal_id=%s AND status='pending'",
             (signal_id,),
         )
+        if cur.rowcount == 0:
+            # Matches zero rows for a nonexistent signal_id AND for one that
+            # already isn't 'pending' (confirmed/denied) -- either way there
+            # is nothing to confirm. Without this check the UPDATE silently
+            # no-ops and the pct=0 path returns None indistinguishable from a
+            # real confirm (a fat-fingered id would look like it worked).
+            conn.rollback()
+            raise ValueError(
+                f"signal_id={signal_id} does not exist or is not pending -- "
+                "nothing to confirm"
+            )
 
     adjustment_id = None
     if pct != 0:
