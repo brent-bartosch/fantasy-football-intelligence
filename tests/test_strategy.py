@@ -30,7 +30,7 @@ def test_default_params():
     assert p.scenario == "qb_hoard_12"
     assert p.qb_by_round == (2, 5, 9)
     assert p.defk_round == 14
-    assert p.caps == (("QB", 4), ("RB", 9), ("WR", 9), ("TE", 3), ("K", 2), ("DEF", 2))
+    assert p.caps == (("QB", 4), ("RB", 9), ("WR", 9), ("TE", 3), ("K", 1), ("DEF", 1))
     assert p.tier_break_bonus == 0.0
     assert p.qb_not_before == (1, 1, 1)
 
@@ -189,6 +189,23 @@ def test_caps_respected_no_fifth_qb():
     fn = make_strategy_fn(StrategyParams())
     pick = fn(avail, 10, counts, 9)
     assert pick.position != "QB"
+    assert pick.ref == "rb1"
+
+
+def test_default_caps_forbid_second_k_and_def():
+    # Roster with K:1, DEF:1 late in the draft, FLEX already covered (so
+    # rule 1's feasibility force doesn't preempt rule 4): rule 4 must never
+    # return a second K/DEF under default caps even when their vorp tops the
+    # remainder (the demo-draft R19 second-kicker bug class).
+    avail = _avail(
+        DEF=[_pp("def2", "DEF", vorp=500.0)],
+        K=[_pp("k2", "K", vorp=500.0)],
+        RB=[_pp("rb1", "RB", vorp=5.0)],
+    )
+    counts = {"QB": 3, "RB": 3, "WR": 3, "TE": 1, "DEF": 1, "K": 1}
+    fn = make_strategy_fn(StrategyParams())
+    pick = fn(avail, 19, counts, 1)
+    assert pick.position not in ("DEF", "K")
     assert pick.ref == "rb1"
 
 

@@ -104,7 +104,7 @@ class StrategyParams:
     scenario: str = "qb_hoard_12"  # which valuation scenario builds the pool
     qb_by_round: tuple = (2, 5, 9)  # QB #n on roster by END of round qb_by_round[n-1]
     defk_round: int = 14  # DEF forced at this round if unheld; K at defk_round+1
-    caps: tuple = (("QB", 4), ("RB", 9), ("WR", 9), ("TE", 3), ("K", 2), ("DEF", 2))
+    caps: tuple = (("QB", 4), ("RB", 9), ("WR", 9), ("TE", 3), ("K", 1), ("DEF", 1))
     tier_break_bonus: float = 0.0  # score bump for closing out a tier
     qb_not_before: tuple = (1, 1, 1)  # QB #n not draftable (rule 4) before this round
     qb_tier_targets: tuple = ()  # QB #n (rule 4 only) capped at tier <= this[n]

@@ -277,6 +277,50 @@ replace it.
 
 ---
 
+## 7. Strategy polish (Task 7): default caps K:1/DEF:1
+
+**Change: `StrategyParams.caps` default DEF/K moved from 2/2 to 1/1** (everything
+else unchanged). A demo draft under the old default took a *second* kicker at
+R19 -- rational under raw VORP (a marginal K beat the remaining skill-position
+bench), but silly in practice: no league starts a 2nd K/DEF, so that pick is
+pure dead roster space. The new default makes that pick structurally
+impossible for our seat (opponents were never affected -- `ROSTER_DAMP` already
+crushes their 2nd K/DEF to near-zero weight).
+
+**One-off A/B (200 paired seeded drafts, `qb_hoard_12` defaults, same seed both
+arms, throwaway script deleted after use): mean all-play% delta (new − old) =
+**−0.39% ± 0.23%** (95% CI, CI excludes 0)** -- small, but a real cost, not the
+"noise or small positive" expected going in. Mechanism: `evaluate_league`
+zeroes each player's one random bye week per season; the old cap's 2nd K/DEF
+acted as free bye-week insurance that the new cap removes. The same direction
+shows up in the ADR D7 gate: composite moved **0.5330 -> 0.5310** (still a
+comfortable PASS against the 0.5101 threshold) because `REF_STRATEGIES`
+(`backtest.py`) inherit the default caps rather than pinning their own.
+Traced to root cause: rule 1's feasibility force ignores `defk_round` and can
+force the *first* DEF/K several rounds early when the roster runs low on
+slack, which under the old cap left genuine slack for rule 4 to *voluntarily*
+take a 2nd DEF/K in the final round -- the reference cells were quietly
+exhibiting the exact demo-draft bug this task kills (confirmed directly: 100/100
+sampled seeds for REF strategy 0 replace a 2nd DEF/K with a bench WR under the
+new cap). Strategy ordering across all 4 REF strategies x 3 seasons is
+unchanged either way. Net verdict: the small win-rate cost is the accepted
+price of behavioral sanity, per this task's brief. (The 0.5330 composite cited
+in the post-calibration addendum below predates this change and now reads
+0.5310; not re-derived here -- out of this task's scope.)
+
+**Bench-discount decision, documented YAGNI:** with K/DEF capped at 1, the
+second-onesie failure mode this task targets is now structurally impossible,
+so a bench-value discount for late-round picks is not implemented. The only
+remaining hoarding risk is TE3/QB4 (already bounded by their own caps the same
+way K/DEF now are). Revisit only if Level-3 rehearsal overrides show late-round
+bench picks misfiring in practice.
+
+**Farm note:** the nightly grid (`scripts/run_sim_farm.py`) does not grid caps
+(fixed at the default) -- this change takes effect for tonight's run onward
+with no grid update needed.
+
+---
+
 ## Addendum 2026-07-10: post-calibration re-verification
 
 Sections 1 and 4 were written when the sim's opponents took QB1 at mean round
