@@ -9,6 +9,7 @@ import sys
 
 from ffi.db import connect
 from ffi.ingest.fantasypros import fp_calls_today
+from ffi.signals_apply import CUMULATIVE_CAP, cumulative_pct
 
 STALE_HOURS = 36  # ADR Domain 2: draft board refuses stale sources; briefing flags at the same line
 
@@ -94,6 +95,55 @@ if rows:
     L += ["Top 15 by VORP (qb_hoard_12):", *(f"- {n} ({p}): {v}" for n, p, v in rows)]
 else:
     L.append("- valuation not yet built today")
+
+# --- Signals (Task 15: human confirm gate) --------------------------------
+# Informational only -- this section never touches red_flags/exit code
+# (ADR D2/D4 health semantics are unchanged by Task 15).
+L.append("\n## Signals")
+with conn.cursor() as cur:
+    cur.execute("SELECT count(*) FROM signals.signals WHERE status = 'pending'")
+    pending_count = cur.fetchone()[0]
+    cur.execute(
+        """SELECT title FROM signals.signals WHERE status = 'pending'
+           ORDER BY fetched_at DESC LIMIT 5"""
+    )
+    top_titles = [r[0] for r in cur.fetchall()]
+L.append(f"- pending signals: {pending_count}")
+if top_titles:
+    L += ["Top pending (most recent):", *(f"- {t}" for t in top_titles)]
+
+with conn.cursor() as cur:
+    cur.execute(
+        """SELECT x.name, a.pct, s.title, s.evidence_url
+           FROM signals.adjustments a
+           JOIN signals.signals s USING (signal_id)
+           JOIN public.player_id_xwalk x ON x.xwalk_id = a.xwalk_id
+           WHERE a.applied_at::date = current_date - 1
+           ORDER BY a.applied_at"""
+    )
+    yesterday_adj = cur.fetchall()
+if yesterday_adj:
+    L.append("Applied yesterday:")
+    L += [
+        f"- {name}: {pct:+.1%} -- {title} ({url})"
+        for name, pct, title, url in yesterday_adj
+    ]
+else:
+    L.append("- no adjustments applied yesterday")
+
+cum = cumulative_pct(conn)
+if cum:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT xwalk_id, name FROM public.player_id_xwalk WHERE xwalk_id = ANY(%s)",
+            (list(cum.keys()),),
+        )
+        names = dict(cur.fetchall())
+    L.append("Cumulative-cap utilization:")
+    L += [
+        f"- {names.get(xid, xid)}: {pct:+.1%} ({abs(pct) / CUMULATIVE_CAP:.0%} of ±{CUMULATIVE_CAP:.0%} cap)"
+        for xid, pct in sorted(cum.items(), key=lambda kv: -abs(kv[1]))
+    ]
 
 out_dir = pathlib.Path("reports")
 out_dir.mkdir(exist_ok=True)

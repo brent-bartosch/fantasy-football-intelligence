@@ -111,6 +111,23 @@ CHECKS = [
         "backtest reference composite active (ADR D7 gate armed)",
         "SELECT count(*) = 1 FROM sim.backtest_reference WHERE is_active",
     ),
+    # --- Phase 4 checks (Task 15: capped adjustments) ---
+    (
+        "signals tables present",
+        "SELECT to_regclass('signals.signals') IS NOT NULL AND to_regclass('signals.adjustments') IS NOT NULL",
+    ),
+    (
+        "no adjustment exceeds per-signal cap",
+        "SELECT count(*) = 0 FROM signals.adjustments WHERE abs(pct) > 0.10",
+    ),
+    (
+        "no player exceeds cumulative cap",
+        """SELECT count(*) = 0 FROM (SELECT xwalk_id, sum(pct) s FROM signals.adjustments GROUP BY 1) t WHERE abs(s) > 0.20""",
+    ),
+    (
+        "draft events table present",
+        "SELECT to_regclass('draft.events') IS NOT NULL",
+    ),
 ]
 
 conn = connect()

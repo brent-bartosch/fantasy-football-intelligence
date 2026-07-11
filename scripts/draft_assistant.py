@@ -38,6 +38,7 @@ from ffi.draft.session import (
 from ffi.draft.state import DraftLog
 from ffi.ids import team_slot
 from ffi.scoring.config import load_config_v1
+from ffi.signals_apply import adjusted_pool, cumulative_pct
 from ffi.sim.pool import build_pool
 from ffi.sim.priors import build_slot_priors
 from ffi.yahoo_client import (
@@ -51,10 +52,17 @@ STALE_HOURS = 36  # ADR D2 — same threshold as run_sim_farm.build_data_vintage
 
 
 def _load_board(conn, scenario: str):
-    """SEAM (Task 15): the single board-load point. Today it is exactly
-    `build_pool`; Task 15 wraps this with signal-based `adjusted_pool` without
-    the caller changing. Keep all board loading behind this one function."""
-    return build_pool(conn, scenario)
+    """SEAM (Task 15): the single board-load point. Uses signal-based
+    `adjusted_pool` when any confirmed adjustment exists (a human keystroke
+    moved a board number, design §4.7 -- see `ffi.signals_apply`), else the
+    plain, reproducible `build_pool`. Keep all board loading behind this one
+    function."""
+    cum = cumulative_pct(conn)
+    if not cum:
+        return build_pool(conn, scenario)
+    max_pct = max(abs(v) for v in cum.values())
+    print(f"board includes {len(cum)} signal adjustments, cum-cap max {max_pct:.0%}")
+    return adjusted_pool(conn, scenario)
 
 
 def check_board_vintage(conn, scenario: str, override_stale: bool) -> dict:
