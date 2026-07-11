@@ -219,6 +219,55 @@ def tier_break_table(conn, date) -> list[str]:
     return lines
 
 
+def qb_tier_table(conn, date) -> list[str]:
+    """Phase 4 Task 6: the `qb_tier` block -- 6 cells, all sharing the
+    qb_subgrid's plan-1-adjacent round knobs (qb_not_before=(1,1,1),
+    qb_by_round=(2,5,9), defk_round=14, tier_break_bonus=0.0), varying only
+    `qb_tier_targets`. `()` is the control (tier-targeting disabled)."""
+    rows = _farm_metric_rows(conn, date, "qb_tier", "all_play_pct")
+    se_rows = _farm_metric_rows(conn, date, "qb_tier", "all_play_se")
+    qb1_rows = _farm_metric_rows(conn, date, "qb_tier", "qb1_round_mean")
+    se_by_cell = {s["cell_idx"]: float(v) for s, v in se_rows}
+    qb1_by_cell = {s["cell_idx"]: float(v) for s, v in qb1_rows}
+    by_cell = {s["cell_idx"]: (s, float(v)) for s, v in rows}
+
+    lines = [
+        "### Farm QB tier-target policy (qb_tier, scenario qb_hoard_12, "
+        "defk_round=14) -- all-play% by qb_tier_targets plan",
+        "",
+        "_Cross-cell deltas only; absolute levels are MC-inflated (see doc "
+        "caveats). `()` is the control -- tier-targeting disabled, same "
+        "qb_not_before=(1,1,1)/qb_by_round=(2,5,9) round knobs as every other "
+        "cell in this block._",
+        "",
+        "| qb_tier_targets | all-play% | +/- 1.96se | mean QB1 round | delta vs control |",
+        "|---|---|---|---|---|",
+    ]
+    ordered = sorted(by_cell)
+    control_cell = next(
+        (c for c in ordered if not by_cell[c][0]["qb_tier_targets"]), None
+    )
+    control_val = by_cell[control_cell][1] if control_cell is not None else None
+    for cell_idx in ordered:
+        strat, val = by_cell[cell_idx]
+        se = se_by_cell.get(cell_idx, 0.0)
+        qb1 = qb1_by_cell.get(cell_idx)
+        targets = tuple(strat["qb_tier_targets"])
+        label = "() [control]" if not targets else str(targets)
+        delta = (
+            "--"
+            if control_val is None or cell_idx == control_cell
+            else (
+                f"{'+' if val - control_val >= 0 else ''}{_fmt_pct(val - control_val)}"
+            )
+        )
+        lines.append(
+            f"| {label} | {_fmt_pct(val)} | +/- {_fmt_pct(1.96 * se)} | "
+            f"{qb1:.2f} | {delta} |"
+        )
+    return lines
+
+
 def farm_defk18_by_plan(conn, date, tier_break=R7_TIER_BREAK) -> dict:
     """all-play% for each qb_plan at defk_round=18, tier_break fixed (default
     0.0 to match the backtest). Returns {qb_plan_idx: all_play_pct}."""
@@ -379,6 +428,8 @@ def build_evidence_block(conn, date) -> str:
     lines += defk_table(conn, date)
     lines.append("")
     lines += tier_break_table(conn, date)
+    lines.append("")
+    lines += qb_tier_table(conn, date)
     lines.append("")
     lines += r7_section(farm_by_plan, bt_results)
     lines.append("")

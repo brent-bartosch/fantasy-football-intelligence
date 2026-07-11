@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Nightly sim farm (Phase 3 / Task 12): the 66-cell strategy grid --
-QB timing (6 plans, each a (qb_not_before, qb_by_round) pair -- Task 11's
-plan amendment, since qb_by_round deadlines alone never bind under
-qb_hoard_12 VORP) x DEF/K round (4) x tier-break bonus (2) = 48 "main" cells
-at scenario qb_hoard_12, PLUS the 6 QB plans crossed with all 3 QB-hoard
-scenarios at defk_round=14/tier_break=0.0 = 18 "qb_subgrid" cells. 66 cells x
-200 seeded drafts x 20 MC seasons each = 13,200 drafts/night.
+"""Nightly sim farm (Phase 3 / Task 12; Task 6 extension): the 72-cell
+strategy grid -- QB timing (6 plans, each a (qb_not_before, qb_by_round) pair
+-- Task 11's plan amendment, since qb_by_round deadlines alone never bind
+under qb_hoard_12 VORP) x DEF/K round (4) x tier-break bonus (2) = 48 "main"
+cells at scenario qb_hoard_12, PLUS the 6 QB plans crossed with all 3
+QB-hoard scenarios at defk_round=14/tier_break=0.0 = 18 "qb_subgrid" cells,
+PLUS 6 `qb_tier_targets` plans (Phase 4 Task 6: a *which-QB* filter by tier,
+crossed against nothing else -- fixed at the qb_subgrid's plan-1-adjacent
+knobs) = 6 "qb_tier" cells. 72 cells x 200 seeded drafts x 20 MC seasons
+each = 14,400 drafts/night.
 
 Per cell: one `sim.batches` row (kind='farm', git SHA, full data_vintage --
 see `build_data_vintage`) + one `sim.batch_results` row per metric
@@ -66,6 +69,13 @@ DEFK_ROUNDS = [8, 11, 14, 18]  # tests the Phase 2 DRAFT-EARLY verdicts in conte
 TIER_BREAK = [0.0, 8.0]
 SCENARIOS_MAIN = ["qb_hoard_12"]
 SCENARIOS_QB_SUBGRID = ["qb_hoard_0", "qb_hoard_12", "qb_hoard_24"]
+# Phase 4 Task 6: qb_tier_targets plans -- QB_TIER_PLANS[i][n] = max tier
+# acceptable for voluntarily drafting QB #(n+1) in rule 4 (see
+# ffi.sim.strategy.StrategyParams.qb_tier_targets). () is the control cell:
+# disabled, so this cell is identical to the qb_subgrid's plan-1-adjacent
+# cell (qb_not_before=(1,1,1), qb_by_round=(2,5,9)) -- a within-night
+# tier-targeting-off baseline.
+QB_TIER_PLANS = [(), (1, 2, 99), (2, 2, 99), (2, 3, 99), (1, 3, 99), (2, 3, 3)]
 N_DRAFTS_PER_CELL = 200
 SEASONS_PER_DRAFT = 20
 OUR_FRANCHISE_SLOT = 12
@@ -88,12 +98,14 @@ METRICS = (
 
 
 def build_grid() -> list[dict]:
-    """The 66-cell grid, in deterministic build order: 48 "main" cells (QB
+    """The 72-cell grid, in deterministic build order: 48 "main" cells (QB
     plan x defk_round x tier_break, scenario fixed at qb_hoard_12), then 18
     "qb_subgrid" cells (QB plan x scenario, defk_round=14/tier_break=0.0
-    fixed). `cell_idx` is assigned sequentially over this same order, 0-65,
-    and is the only thing (besides `--base-seed`) `derive_seed` needs to
-    reproduce any draft in the farm."""
+    fixed), then 6 "qb_tier" cells (qb_tier_targets plan, everything else
+    fixed at scenario=qb_hoard_12/qb_not_before=(1,1,1)/qb_by_round=(2,5,9)/
+    defk_round=14/tier_break_bonus=0.0). `cell_idx` is assigned sequentially
+    over this same order, 0-71, and is the only thing (besides
+    `--base-seed`) `derive_seed` needs to reproduce any draft in the farm."""
     cells: list[dict] = []
     idx = 0
     for qb_plan_idx, (qb_not_before, qb_by_round) in enumerate(QB_PLANS):
@@ -127,6 +139,21 @@ def build_grid() -> list[dict]:
                 }
             )
             idx += 1
+    for tier_plan_idx, qb_tier_targets in enumerate(QB_TIER_PLANS):
+        cells.append(
+            {
+                "cell_idx": idx,
+                "grid": "qb_tier",
+                "scenario": "qb_hoard_12",
+                "qb_plan_idx": tier_plan_idx,  # index into QB_TIER_PLANS here
+                "qb_not_before": (1, 1, 1),
+                "qb_by_round": (2, 5, 9),
+                "defk_round": 14,
+                "tier_break_bonus": 0.0,
+                "qb_tier_targets": qb_tier_targets,
+            }
+        )
+        idx += 1
     return cells
 
 
@@ -137,12 +164,13 @@ def strategy_params_for_cell(cell: dict) -> StrategyParams:
         qb_not_before=cell["qb_not_before"],
         defk_round=cell["defk_round"],
         tier_break_bonus=cell["tier_break_bonus"],
+        qb_tier_targets=cell.get("qb_tier_targets", ()),
     )
 
 
 def derive_seed(base_seed: int, cell_idx: int, draft_idx: int) -> int:
     """`base_seed x 100003 + cell_idx x 1009 + draft_idx` -- collision-free
-    for cell_idx in 0-65 and draft_idx in 0-199 (1009 > 199)."""
+    for cell_idx in 0-71 and draft_idx in 0-199 (1009 > 199)."""
     return base_seed * SEED_BASE_MULT + cell_idx * SEED_CELL_MULT + draft_idx
 
 

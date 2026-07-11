@@ -40,6 +40,7 @@ cited at all.
 2. **DEF/K: draft them in the last ~5-6 rounds (round 14-18) or stream -- not early.** This REVISES Phase 2's "draft early" verdict at the level of *action*. Confidence: high that round 8-11 is wrong; moderate on 14 vs 18.
 3. **Tier-break bonus: drop it (keep `tier_break_bonus=0.0`).** No measurable benefit; the effect is ±0.1% (within noise). Confidence: high.
 4. **Sim-vs-reality transfer of QB ordering is now MODERATE (Spearman 0.60), up from 0.20 after opponent calibration -- above the 0.4 "material transfer" bar.** Both methods rank front-loading QB worst AND both now put a QB1-early 2-QB build near the top; they still disagree only on how far to delay QB1 (the farm favors maximum delay; the backtest favors the early-QB1 2-QB core). The methods now materially agree, so the earlier blanket "rank the backtest above the sim" no longer applies -- but where they still diverge (degree of delay) the real-points backtest remains the tie-breaker, and it does not reward maximum delay. See the post-calibration addendum.
+5. **QB tier-target refinement: cap QB1 to tier <= 1 (this year, Josh Allen alone) and let the round-2 deadline take the fallback if he's gone.** +1.3 points over the round-plan control -- the only tested tier-target plan to clear ±1.96se; every other restriction, including the mechanically "obvious" one, is noise or worse. Composes with #1, doesn't replace it. Confidence: moderate (one farm night, not backtest-cross-checked). See Section 6.
 
 ---
 
@@ -223,6 +224,53 @@ p-value no power; the rank agreement, not the p-value, is the signal.)
 
 ---
 
+## 6. QB tier-target policy (`qb_tier_targets`): which QB, not when (Phase 4 Task 6)
+
+**Recommendation: cap QB1 to tier <= 1 (Josh Allen alone in the 2026 tier map)
+and let the round-2 deadline force take the best available QB if he's gone by
+then. Do not otherwise restrict QB1 or QB2 by tier.**
+
+`qb_tier_targets` is a *which*-QB filter on rule 4 (the argmax rule) --
+distinct from `qb_not_before` (*when* rule 4 may take a QB) and `qb_by_round`
+(the hard deadline backstop). It can only make rule 4 pass on a QB it would
+otherwise take; it never forces one, and the deadline still fires regardless
+of tier (see `test_deadline_force_ignores_tier_target`). Six plans were farmed
+tonight at scenario `qb_hoard_12`, everything else fixed at the qb_subgrid's
+plan-1-adjacent knobs (`qb_not_before=(1,1,1)`, `qb_by_round=(2,5,9)`,
+`defk_round=14`, `tier_break_bonus=0.0`), 200 seeded drafts per cell -- see the
+"Farm QB tier-target policy" table below.
+
+**Only `(1, 2, 99)` clears the control beyond combined +/-1.96se: +1.3 points
+(69.4% -> 70.7%; margins 0.42%/0.38%, non-overlapping).** Every other tested
+plan is statistically indistinguishable from the control, including the
+mechanically "obvious" candidate `(2, 3, 99)` (QB1 from Allen-or-tier-2, QB2
+before the tier-3 cliff) -- it lands at 68.7%, *below* the control, well
+within its own noise band. The naive expectation does not survive contact
+with the table: restricting QB1 to the 11-deep tier-2 pool (`(2,*,*)` plans)
+does nothing measurable; restricting QB2 by tier (`(*,2,*)` or `(*,3,*)`) does
+nothing measurable either. Only the tightest QB1 restriction -- tier <= 1,
+i.e. Allen or nothing -- moves the needle.
+
+**Mechanism, confirmed by `qb1_round_mean`:** capping QB1 to tier 1 means rule
+4 will only voluntarily take a QB as QB1 if it is literally Josh Allen; from
+our seat he's usually gone by our pick, so rule 4 declines every other QB and
+takes the best non-QB argmax instead, until the round-2 deadline
+(`qb_by_round[0]=2`) force-takes the best available QB regardless of tier.
+Mean QB1 round confirms it: **1.74 under `(1,2,99)`/`(1,3,99)` (the two plans
+that restrict QB1 to tier <= 1) vs 1.00 under every plan that doesn't**. The
+tier cap is functionally "wait one extra round for QB1, banking a round-1
+non-QB pick instead of reaching" -- not a scarcity-driven QB2/QB3 effect.
+
+**Confidence: moderate.** One farm night, one seed, `qb_hoard_12` only --
+unlike the QB-*timing* plans (Section 4/R7), tier-target plans have no
+backtest cross-check (R7 re-runs `(qb_not_before, qb_by_round)` plans only) and
+haven't been run against the other two hoard scenarios. Treat `(1,2,99)`-style
+QB1 gating as a promising refinement layered on top of Headline #1's "2-QB
+core, don't front-load" -- it composes with that recommendation, it doesn't
+replace it.
+
+---
+
 ## Addendum 2026-07-10: post-calibration re-verification
 
 Sections 1 and 4 were written when the sim's opponents took QB1 at mean round
@@ -297,9 +345,9 @@ for the 0.20 -> 0.60 Spearman.
 
 <!-- BEGIN GENERATED EVIDENCE (scripts/strategy_conclusions.py) -->
 
-_Generated 2026-07-10T20:25:56 from farm run dated 2026-07-10 (git ece15009a56db6005ef7a67ed30d2461fd77b15e)._
+_Generated 2026-07-10T21:09:26 from farm run dated 2026-07-10 (git b527d697f42dbc7c9d8d65fd3f3b1c4c0171e798-dirty)._
 
-_Data vintage: ADP snapshot #6 (13.13h old at farm time), valuation computed 2026-07-10T09:05:21.468303-07:00, priors latest_season 2025, degraded=False._
+_Data vintage: ADP snapshot #6 (14.06h old at farm time), valuation computed 2026-07-10T09:05:21.468303-07:00, priors latest_season 2025, degraded=False._
 
 ### Farm QB-policy (qb_subgrid, defk_round=14) -- all-play% by qb_plan x scenario
 
@@ -345,6 +393,19 @@ _defk_round = round at which DEF is force-drafted (K at defk_round+1) if still u
 | 8.0 | 69.3% | 24 |
 
 Delta (tier_break=8.0 minus tier_break=0.0): +0.1%
+
+### Farm QB tier-target policy (qb_tier, scenario qb_hoard_12, defk_round=14) -- all-play% by qb_tier_targets plan
+
+_Cross-cell deltas only; absolute levels are MC-inflated (see doc caveats). `()` is the control -- tier-targeting disabled, same qb_not_before=(1,1,1)/qb_by_round=(2,5,9) round knobs as every other cell in this block._
+
+| qb_tier_targets | all-play% | +/- 1.96se | mean QB1 round | delta vs control |
+|---|---|---|---|---|
+| () [control] | 69.4% | +/- 0.4% | 1.00 | -- |
+| (1, 2, 99) | 70.7% | +/- 0.4% | 1.74 | +1.3% |
+| (2, 2, 99) | 68.9% | +/- 0.5% | 1.00 | -0.5% |
+| (2, 3, 99) | 68.7% | +/- 0.4% | 1.00 | -0.7% |
+| (1, 3, 99) | 69.9% | +/- 0.4% | 1.74 | +0.4% |
+| (2, 3, 3) | 69.2% | +/- 0.4% | 1.00 | -0.3% |
 
 ### R7 sim-vs-backtest agreement (QB timing, defk_round=18)
 

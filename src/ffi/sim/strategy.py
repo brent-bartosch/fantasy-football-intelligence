@@ -37,13 +37,16 @@ Decision order inside the returned fn (checked in this order, every call):
    (the delay knob below), and not DEF/K before `defk_round` (no early
    luxury DEF/K picks) -- take the top `CAND_WINDOW` (`ffi.sim.opponent`)
    candidates, score each `vorp + tier_break_bonus * is_last_in_tier`, and
-   argmax. `is_last_in_tier` is computed against the position's full
-   *available* list (not just the candidate window): true when no other
-   available player at that position shares the candidate's tier, so taking
-   this one closes out the tier. Ties (rare, but real with
-   `tier_break_bonus`) break by lower ADP (a real ADP always beats `None`),
-   then by name -- both are pure functions of the candidates and stable
-   across runs, giving the same result for the same board every time.
+   argmax. For QB specifically, `qb_tier_targets` (below) may additionally
+   narrow the candidate pool by tier before that top-`CAND_WINDOW` slice is
+   taken. `is_last_in_tier` is computed against the position's full
+   *available* list (not just the candidate window, and not the
+   `qb_tier_targets`-narrowed one): true when no other available player at
+   that position shares the candidate's tier, so taking this one closes out
+   the tier. Ties (rare, but real with `tier_break_bonus`) break by lower ADP
+   (a real ADP always beats `None`), then by name -- both are pure functions
+   of the candidates and stable across runs, giving the same result for the
+   same board every time.
 
 A note on forces vs. legality: rules 2 and 3 describe hard-sounding
 "forces," but a strategy bug that returns an infeasible pick makes
@@ -72,6 +75,19 @@ not a bug. `make_strategy_fn` raises `ValueError` if `qb_not_before` is
 shorter than `qb_by_round` (a grid config that couldn't possibly gate every
 planned QB is rejected loudly rather than silently under-indexing).
 
+`qb_tier_targets` (Phase 4 Task 6): a rule-4-only *which*-QB filter, distinct
+from `qb_not_before`'s *when*. `qb_tier_targets[n]` (n = `counts["QB"]` at the
+time of the call, 0-indexed same as `qb_not_before`) caps rule 4's QB
+candidates to `tier <= qb_tier_targets[n]` when voluntarily drafting QB
+#(n+1); an index past the tuple's end is unrestricted (same convention as
+`qb_not_before`'s length handling), and the default `()` never restricts
+anything. Like `qb_not_before`, it ONLY narrows rule 4's candidate set --
+rules 1-3 are untouched, so a `qb_by_round` deadline still force-takes the
+best available QB by plain vorp regardless of tier if a tier target would
+otherwise have excluded it (a misconfigured target, like a misconfigured
+`qb_not_before`, degrades to "the deadline wins" rather than deadlocking the
+draft).
+
 Deterministic: no `rng` anywhere in this module. Every branch is a pure
 function of its arguments.
 """
@@ -91,6 +107,7 @@ class StrategyParams:
     caps: tuple = (("QB", 4), ("RB", 9), ("WR", 9), ("TE", 3), ("K", 2), ("DEF", 2))
     tier_break_bonus: float = 0.0  # score bump for closing out a tier
     qb_not_before: tuple = (1, 1, 1)  # QB #n not draftable (rule 4) before this round
+    qb_tier_targets: tuple = ()  # QB #n (rule 4 only) capped at tier <= this[n]
 
 
 def _unmet_positions(counts: dict) -> list[str]:
@@ -214,7 +231,17 @@ def make_strategy_fn(params: StrategyParams) -> PickFn:
             cands = avail_by_pos.get(pos) or []
             if not cands:
                 continue
-            for c in cands[:CAND_WINDOW]:
+            # `_is_last_in_tier` (via `_score`) is computed against `cands`,
+            # so for QB it must still see the position's FULL available list
+            # -- the tier filter below narrows *candidacy*, not tier-closure
+            # math -- hence it's applied to a separate `filtered` view.
+            filtered = cands
+            if pos == "QB" and qb_n < len(params.qb_tier_targets):
+                max_tier = params.qb_tier_targets[qb_n]
+                filtered = [c for c in cands if c.tier <= max_tier]
+                if not filtered:
+                    continue
+            for c in filtered[:CAND_WINDOW]:
                 scored.append((_score(c, cands, params.tier_break_bonus), c))
 
         if not scored:

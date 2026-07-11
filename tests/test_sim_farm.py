@@ -18,18 +18,18 @@ from ffi.sim.calibrate import QbTimingMeasurement
 from ffi.sim.strategy import StrategyParams
 
 # ---------------------------------------------------------------------------
-# Grid construction (66 cells, deterministic order, exact knob values)
+# Grid construction (72 cells, deterministic order, exact knob values)
 # ---------------------------------------------------------------------------
 
 
-def test_grid_has_66_cells():
+def test_grid_has_72_cells():
     cells = run_sim_farm.build_grid()
-    assert len(cells) == 66
+    assert len(cells) == 72
 
 
 def test_grid_cell_idx_is_sequential_from_zero():
     cells = run_sim_farm.build_grid()
-    assert [c["cell_idx"] for c in cells] == list(range(66))
+    assert [c["cell_idx"] for c in cells] == list(range(72))
 
 
 def test_grid_main_block_is_48_cells_qb_hoard_12_only():
@@ -92,19 +92,81 @@ def test_grid_main_block_has_12_cells_per_defk_round():
     assert counts == {8: 12, 11: 12, 14: 12, 18: 12}
 
 
-def test_grid_last_cell_is_last_qb_plan_last_subgrid_scenario():
+def test_grid_last_subgrid_cell_is_last_qb_plan_last_subgrid_scenario():
     cells = run_sim_farm.build_grid()
-    last = cells[65]
-    assert last["grid"] == "qb_subgrid"
-    assert last["qb_not_before"] == (1, 4, 99)
-    assert last["qb_by_round"] == (2, 7, 19)
-    assert last["scenario"] == "qb_hoard_24"
+    last_subgrid = cells[65]
+    assert last_subgrid["grid"] == "qb_subgrid"
+    assert last_subgrid["qb_not_before"] == (1, 4, 99)
+    assert last_subgrid["qb_by_round"] == (2, 7, 19)
+    assert last_subgrid["scenario"] == "qb_hoard_24"
 
 
 def test_grid_qb_plan_count_matches_grid_constant():
     assert len(run_sim_farm.QB_PLANS) == 6
     assert len(run_sim_farm.DEFK_ROUNDS) == 4
     assert len(run_sim_farm.TIER_BREAK) == 2
+    assert len(run_sim_farm.QB_TIER_PLANS) == 6
+
+
+# ---------------------------------------------------------------------------
+# qb_tier block (Phase 4 Task 6): 6 cells, idx 66-71, everything but
+# qb_tier_targets fixed.
+# ---------------------------------------------------------------------------
+
+
+def test_grid_qb_tier_block_is_6_cells_idx_66_to_71():
+    cells = run_sim_farm.build_grid()
+    tier_cells = [c for c in cells if c["grid"] == "qb_tier"]
+    assert len(tier_cells) == 6
+    assert [c["cell_idx"] for c in tier_cells] == list(range(66, 72))
+
+
+def test_grid_qb_tier_block_fixed_knobs():
+    cells = run_sim_farm.build_grid()
+    tier_cells = [c for c in cells if c["grid"] == "qb_tier"]
+    assert all(c["scenario"] == "qb_hoard_12" for c in tier_cells)
+    assert all(c["qb_not_before"] == (1, 1, 1) for c in tier_cells)
+    assert all(c["qb_by_round"] == (2, 5, 9) for c in tier_cells)
+    assert all(c["defk_round"] == 14 for c in tier_cells)
+    assert all(c["tier_break_bonus"] == 0.0 for c in tier_cells)
+
+
+def test_grid_qb_tier_block_targets_match_plans_in_order():
+    cells = run_sim_farm.build_grid()
+    tier_cells = [c for c in cells if c["grid"] == "qb_tier"]
+    assert [c["qb_tier_targets"] for c in tier_cells] == run_sim_farm.QB_TIER_PLANS
+
+
+def test_grid_qb_tier_first_cell_is_control_disabled():
+    cells = run_sim_farm.build_grid()
+    control = cells[66]
+    assert control["qb_tier_targets"] == ()
+
+
+def test_grid_last_cell_overall_is_last_qb_tier_plan():
+    cells = run_sim_farm.build_grid()
+    last = cells[71]
+    assert last["grid"] == "qb_tier"
+    assert last["qb_tier_targets"] == (2, 3, 3)
+
+
+def test_strategy_params_for_cell_includes_qb_tier_targets():
+    cells = run_sim_farm.build_grid()
+    control = cells[66]
+    params = run_sim_farm.strategy_params_for_cell(control)
+    assert params.qb_tier_targets == ()
+
+    aggressive = cells[71]
+    params2 = run_sim_farm.strategy_params_for_cell(aggressive)
+    assert params2.qb_tier_targets == (2, 3, 3)
+
+
+def test_strategy_params_for_cell_main_grid_qb_tier_targets_defaults_empty():
+    # main/qb_subgrid cells have no "qb_tier_targets" key -- must default to
+    # () (inert), not KeyError.
+    cells = run_sim_farm.build_grid()
+    params = run_sim_farm.strategy_params_for_cell(cells[0])
+    assert params.qb_tier_targets == ()
 
 
 def test_grid_deterministic_across_calls():
@@ -132,10 +194,10 @@ def test_derive_seed_formula():
 def test_derive_seed_unique_across_cells_and_drafts():
     seeds = {
         run_sim_farm.derive_seed(1, cell_idx, draft_idx)
-        for cell_idx in range(66)
+        for cell_idx in range(72)
         for draft_idx in range(200)
     }
-    assert len(seeds) == 66 * 200
+    assert len(seeds) == 72 * 200
 
 
 # ---------------------------------------------------------------------------
