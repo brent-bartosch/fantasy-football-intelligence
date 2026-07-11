@@ -44,7 +44,7 @@ import numpy as np
 from ffi.db import connect
 from ffi.scoring.config import load_config_v1
 from ffi.sim.draft import run_draft, snake_position
-from ffi.sim.opponent import CAND_WINDOW, ROSTER_DAMP, TAU
+from ffi.sim.opponent import DEFAULT_OPPONENT_PARAMS, ROSTER_DAMP
 from ffi.sim.pool import build_pool
 from ffi.sim.priors import build_slot_priors
 from ffi.sim.season import evaluate_league, fit_weekly_points_cv
@@ -483,9 +483,15 @@ def main() -> None:
     }
     pool_by_scenario = {s: build_pool(conn, s) for s in scenarios}
 
+    # Provenance for sim.batches.opponent_params: the full OpponentParams the
+    # farm actually drafts under (run_cell -> run_draft with no explicit
+    # opponent_params, so DEFAULT_OPPONENT_PARAMS applies -- now the Task 4
+    # calibrated QB pos_need_scale), plus the roster-damp table and priors
+    # params that are also part of the opponent model but live outside the
+    # dataclass. `pos_need_scale` (a tuple of tuples) JSON-serializes to nested
+    # arrays.
     opponent_params = {
-        "tau": TAU,
-        "cand_window": CAND_WINDOW,
+        **dataclasses.asdict(DEFAULT_OPPONENT_PARAMS),
         "roster_damp": ROSTER_DAMP,
         "priors": priors.params,
     }

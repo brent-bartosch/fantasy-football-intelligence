@@ -27,12 +27,26 @@ import pathlib
 from collections import defaultdict
 
 from ffi.db import connect
+from ffi.sim.calibrate import (
+    _seasons_weighted_mean,
+    historical_qb_timing,
+    measure_qb_timing,
+)
 from ffi.sim.draft import snake_position
+from ffi.sim.pool import build_pool
 from ffi.sim.priors import build_slot_priors
 
 REPORTS_DIR = pathlib.Path("reports")
 
-HISTORICAL_QB1_ROUND = 1.83  # league-wide, 16-season mining ground truth
+# The assumption audit is now a HARD regression check on the adopted Task 4 QB
+# calibration: it draws a uniform, unbiased 100-draft opponent sample under the
+# live pool/priors (opponent_params=None -> the shipped calibrated default) and
+# compares the opponent QB1-round mean against the live seasons-weighted
+# historical mean. Post-calibration it must PASS; a miss exits nonzero (not a
+# WARN). The old estimate was read off outcome-biased sample_drafts against a
+# hardcoded 1.83 -- both replaced.
+AUDIT_SCENARIO = "qb_hoard_12"
+AUDIT_N_DRAFTS = 100
 QB1_TOLERANCE = 0.5
 
 _BATCHES_QUERY = """
@@ -281,68 +295,10 @@ def _worst_drafts_section(batches: list, sample_drafts: list, n: int = 3) -> lis
     return lines
 
 
-def _assumption_audit(conn, sample_drafts: list) -> list[str]:
-    """Both figures below are computed EXCLUDING our own seat's picks: our
-    seat's QB/DEF timing is the experimental knob the farm deliberately
-    varies (qb_not_before/qb_by_round/defk_round), so including it would
-    bias "league-wide" toward whatever plans happened to be gridded rather
-    than testing what this audit is actually for -- whether the OPPONENT
-    model (`build_slot_priors`, untouched by the strategy grid) reproduces
-    realistic league-wide behavior."""
-    lines = ["## Assumption audit", ""]
-
-    qb1_rounds = []
-    band_counts: dict = defaultdict(lambda: defaultdict(int))
-    band_totals: dict = defaultdict(int)
-    for s in sample_drafts:
-        our_position = s["our_position"]
-        by_team = defaultdict(list)
-        for p in s["picks"]:
-            if p["position_slot"] == our_position:
-                continue
-            by_team[p["position_slot"]].append(p)
-            band = _round_band(snake_position(p["overall"])[0])
-            band_counts[band][p["pos"]] += 1
-            band_totals[band] += 1
-        for team_picks in by_team.values():
-            qbs = [p for p in team_picks if p["pos"] == "QB"]
-            if qbs:
-                qb1_rounds.append(snake_position(min(p["overall"] for p in qbs))[0])
-
-    if qb1_rounds:
-        sim_qb1_mean = sum(qb1_rounds) / len(qb1_rounds)
-    else:
-        sim_qb1_mean = None
-
-    if sim_qb1_mean is None:
-        lines.append("- QB1-round mean: no data")
-    else:
-        diff = abs(sim_qb1_mean - HISTORICAL_QB1_ROUND)
-        if diff > QB1_TOLERANCE:
-            lines.append(
-                f"- WARN: sim league-wide QB1-round mean {sim_qb1_mean:.2f} vs historical "
-                f"{HISTORICAL_QB1_ROUND} (diff {diff:.2f} > {QB1_TOLERANCE} tolerance)"
-            )
-            lines.append(
-                f"  - _Caveat: computed from {len(sample_drafts)} stored sample_drafts "
-                "(the farm's worst/best/random picks per cell, not a uniform draw from "
-                "the night's full run) -- an outcome-biased cross-section, and "
-                "opponents-only (our own seat's QB timing is the experimental knob, "
-                "excluded above). Treat this WARN as directional, not a calibrated "
-                "estimate of the opponent model's true QB1-round distribution._"
-            )
-        else:
-            lines.append(
-                f"- sim league-wide QB1-round mean {sim_qb1_mean:.2f} vs historical "
-                f"{HISTORICAL_QB1_ROUND} (within {QB1_TOLERANCE} tolerance)"
-            )
-
-    try:
-        priors = build_slot_priors(conn)
-    except ValueError:
-        lines.append("- position-share vs priors: build_slot_priors failed, skipped")
-        return lines
-
+def _band_averaged_priors(priors) -> dict:
+    """band -> pos -> mean prior share across every (slot, round) whose round
+    falls in that band. The convention the audit's position-share deviation
+    table compares sim shares against (controller adjudication, Task 4)."""
     priors_sums: dict = defaultdict(lambda: defaultdict(float))
     priors_counts: dict = defaultdict(int)
     for (_, rnd), share in priors.pos_share.items():
@@ -350,7 +306,7 @@ def _assumption_audit(conn, sample_drafts: list) -> list[str]:
         priors_counts[band] += 1
         for pos, v in share.items():
             priors_sums[band][pos] += v
-    priors_avg = {
+    return {
         band: {
             pos: priors_sums[band][pos] / priors_counts[band]
             for pos in priors_sums[band]
@@ -358,27 +314,74 @@ def _assumption_audit(conn, sample_drafts: list) -> list[str]:
         for band in priors_sums
     }
 
+
+def _assumption_audit_lines(measured, priors, historical) -> tuple[list[str], bool]:
+    """Pure audit logic over a uniform opponent `QbTimingMeasurement`, the
+    live `priors`, and `historical` QB-timing. Returns (markdown lines, ok):
+    `ok` is False iff the opponent QB1-round mean drifts more than
+    `QB1_TOLERANCE` from the seasons-weighted historical mean -- a hard
+    regression on the adopted Task 4 calibration (the caller exits nonzero).
+
+    Position-share deviations compare the sim's opponent shares against
+    BAND-AVERAGED PRIORS (not deviation-from-uniform) -- the convention the
+    prior sample_drafts audit used, kept so the table stays comparable.
+    Opponents-only throughout: `measure_qb_timing` excludes our own seat
+    (slot 12), whose QB timing is the strategy knob, not organic behavior."""
+    lines = ["## Assumption audit", ""]
+
+    sim_qb1_mean = measured.league_means[0]
+    hist_qb1 = _seasons_weighted_mean(historical, "qb1")
+    diff = abs(sim_qb1_mean - hist_qb1)
+    ok = diff <= QB1_TOLERANCE
+    if ok:
+        lines.append(
+            f"- sim league-wide QB1-round mean {sim_qb1_mean:.2f} vs historical "
+            f"{hist_qb1:.2f} (within {QB1_TOLERANCE} tolerance)"
+        )
+    else:
+        lines.append(
+            f"- REGRESSION: sim league-wide QB1-round mean {sim_qb1_mean:.2f} vs "
+            f"historical {hist_qb1:.2f} (diff {diff:.2f} > {QB1_TOLERANCE} tolerance)"
+        )
+        lines.append(
+            f"  - _Hard regression check on the adopted Task 4 QB calibration: a "
+            f"uniform {measured.n_drafts}-draft opponent sample (opponents-only, "
+            "not the outcome-biased sample_drafts). sim_report exits nonzero._"
+        )
+
+    priors_avg = _band_averaged_priors(priors)
     lines.append("")
     lines.append("Sim position-share by round band vs priors (top deviations):")
     lines.append("| band | position | sim share | priors share | deviation |")
     lines.append("|---|---|---|---|---|")
     deviations = []
-    for band in ("R1-3", "R4-8", "R9+"):
-        total = band_totals.get(band, 0)
-        if total == 0:
-            continue
-        for pos, cnt in band_counts[band].items():
-            sim_share = cnt / total
-            prior_share = priors_avg.get(band, {}).get(pos, 0.0)
-            deviations.append(
-                (abs(sim_share - prior_share), band, pos, sim_share, prior_share)
-            )
+    for (band, pos), sim_share in measured.pos_share_by_band.items():
+        prior_share = priors_avg.get(band, {}).get(pos, 0.0)
+        deviations.append(
+            (abs(sim_share - prior_share), band, pos, sim_share, prior_share)
+        )
     deviations.sort(reverse=True)
     for dev, band, pos, sim_share, prior_share in deviations[:10]:
         lines.append(
             f"| {band} | {pos} | {sim_share:.1%} | {prior_share:.1%} | {dev:.1%} |"
         )
-    return lines
+    return lines, ok
+
+
+def _run_assumption_audit(conn, date: datetime.date) -> tuple[list[str], bool]:
+    """I/O wrapper: build the live pool/priors/history off `conn` and draw the
+    uniform opponent sample (`opponent_params=None` -> the shipped calibrated
+    default), then hand off to `_assumption_audit_lines`. `base_seed` is
+    derived from the report date so a given day's audit is reproducible.
+    Fail-loud: `historical_qb_timing` raises if the mining query is empty."""
+    pool = build_pool(conn, AUDIT_SCENARIO)
+    priors = build_slot_priors(conn)
+    historical = historical_qb_timing(conn)
+    base_seed = int(date.strftime("%Y%m%d"))
+    measured = measure_qb_timing(
+        pool, priors, n_drafts=AUDIT_N_DRAFTS, base_seed=base_seed, opponent_params=None
+    )
+    return _assumption_audit_lines(measured, priors, historical)
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +389,10 @@ def _assumption_audit(conn, sample_drafts: list) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def render_report(conn, date: datetime.date) -> str:
+def render_report(conn, date: datetime.date) -> tuple[str, bool]:
+    """Returns (report markdown, audit_ok). `audit_ok` is False when the
+    assumption audit's QB1 regression check fails -- `main_for_date` writes the
+    report either way (evidence) but exits nonzero when it is False."""
     batches = load_batches(conn, date)
     if not batches:
         raise ValueError(f"render_report: no farm batches found for {date.isoformat()}")
@@ -425,12 +431,13 @@ def render_report(conn, date: datetime.date) -> str:
     lines.append("")
     lines += _worst_drafts_section(batches, sample_drafts)
     lines.append("")
-    lines += _assumption_audit(conn, sample_drafts)
-    return "\n".join(lines) + "\n"
+    audit_lines, audit_ok = _run_assumption_audit(conn, date)
+    lines += audit_lines
+    return "\n".join(lines) + "\n", audit_ok
 
 
 def main_for_date(conn, date: datetime.date) -> pathlib.Path:
-    report = render_report(conn, date)
+    report, audit_ok = render_report(conn, date)
     REPORTS_DIR.mkdir(exist_ok=True)
     out = REPORTS_DIR / f"sim-farm-{date.isoformat()}.md"
     out.write_text(report)
@@ -441,6 +448,12 @@ def main_for_date(conn, date: datetime.date) -> pathlib.Path:
     if degraded:
         raise SystemExit(
             f"sim_report: at least one batch for {date.isoformat()} ran stale/degraded"
+        )
+    if not audit_ok:
+        raise SystemExit(
+            f"sim_report: assumption audit QB1 regression for {date.isoformat()} -- "
+            "opponent QB1-round mean drifted beyond tolerance from historical "
+            "(adopted Task 4 calibration regressed)"
         )
     return out
 

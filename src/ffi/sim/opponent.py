@@ -64,7 +64,18 @@ class OpponentParams:
     # its QB prior share ×3.0, holding 1 => ×1.4, holding >=2 => ×1.0 (past
     # the tuple's end, the LAST entry extends). () = mechanism off = bit-
     # identical legacy behavior.
-    pos_need_scale: tuple[tuple[str, tuple[float, ...]], ...] = ()
+    #
+    # Shipped default (("QB", (2.0, 1.5, 0.5)),): the Phase 4 Task 4 fit
+    # (scripts/calibrate_opponents.py --fit, reports/opponent-calibration-
+    # 2026-07-10.md; plan .superpowers/sdd/task-4-brief.md). It pulls opponent
+    # QB1 timing from an un-calibrated round 2.78 to 1.73 (historical
+    # seasons-weighted mean 1.83) and QB2 to 4.50 (historical 4.45); the s2=0.5
+    # tail damps a 3rd QB but cannot fully reach history's very-late QB3
+    # (measured 8.86 vs 10.78 -- a documented mechanism limitation, weighted
+    # least in the fit objective). `pos_need_scale=()` still selects legacy.
+    pos_need_scale: tuple[tuple[str, tuple[float, ...]], ...] = (
+        ("QB", (2.0, 1.5, 0.5)),
+    )
 
 
 DEFAULT_OPPONENT_PARAMS = OpponentParams()

@@ -1,8 +1,10 @@
 """Tests for OpponentParams — roster-state-conditioned prior scale (Phase 4
-Task 3). Default/empty pos_need_scale must be bit-identical to legacy
-behavior; the mechanism only engages when pos_need_scale is non-empty."""
+Tasks 3-4). `pos_need_scale=()` (mechanism OFF) must stay bit-identical to
+pre-mechanism legacy behavior; the SHIPPED default is the Task 4 fitted QB
+tuple, and a change-detector pins it so nobody edits it casually."""
+import hashlib
+
 import numpy as np
-import pytest
 
 from simfixtures import synthetic_pool, synthetic_priors
 
@@ -36,21 +38,55 @@ def _pp(ref, position, adp, proj=100.0):
     )
 
 
+# Frozen signature of the seed-42 legacy draft (mechanism OFF). Captured from
+# `pos_need_scale=()`, which routes through the identical un-scaled weight math
+# the opponent model used before OpponentParams existed (opponent_pick's
+# `if sc:` guard skips all scaling when the scale map is empty) -- so this IS
+# the pre-mechanism golden. Regenerate only if the legacy code path itself is
+# deliberately changed.
+_LEGACY_SEED42_HASH = "5eccd28a37a5733a8d27bfd120a9f19f457ed6b32d391f954f58ccba9d85c7b0"
+
+
+def _picks_hash(result) -> str:
+    return hashlib.sha256("|".join(p["ref"] for p in result.picks).encode()).hexdigest()
+
+
 def test_default_params_dataclass_shape():
     assert DEFAULT_OPPONENT_PARAMS == OpponentParams()
     assert DEFAULT_OPPONENT_PARAMS.tau == TAU
     assert DEFAULT_OPPONENT_PARAMS.cand_window == CAND_WINDOW
-    assert DEFAULT_OPPONENT_PARAMS.pos_need_scale == ()
+    # SHIPPED default is the Task 4 fitted QB scale, not empty.
+    assert DEFAULT_OPPONENT_PARAMS.pos_need_scale == (("QB", (2.0, 1.5, 0.5)),)
 
 
-def test_default_params_are_bit_identical_to_legacy():
+def test_empty_scale_is_bit_identical_to_legacy():
+    # pos_need_scale=() turns the mechanism off and must reproduce the frozen
+    # pre-mechanism draft byte-for-byte; the two empty-scale spellings must
+    # also agree with each other.
     fn = make_strategy_fn(StrategyParams())
-    r_legacy = run_draft(pool, priors, fn, seed=42)
-    r_default = run_draft(pool, priors, fn, seed=42, opponent_params=OpponentParams())
-    r_empty_scale = run_draft(
+    r_empty = run_draft(
         pool, priors, fn, seed=42, opponent_params=OpponentParams(pos_need_scale=())
     )
-    assert r_legacy.picks == r_default.picks == r_empty_scale.picks
+    r_empty_explicit = run_draft(
+        pool,
+        priors,
+        fn,
+        seed=42,
+        opponent_params=OpponentParams(
+            tau=TAU, cand_window=CAND_WINDOW, pos_need_scale=()
+        ),
+    )
+    assert r_empty.picks == r_empty_explicit.picks
+    assert _picks_hash(r_empty) == _LEGACY_SEED42_HASH
+
+
+def test_default_is_calibrated():
+    # Change-detector: the adopted default must draft differently from legacy
+    # (the calibration is live), and its QB scale must be the fitted tuple.
+    fn = make_strategy_fn(StrategyParams())
+    r_default = run_draft(pool, priors, fn, seed=42)
+    assert _picks_hash(r_default) != _LEGACY_SEED42_HASH
+    assert dict(DEFAULT_OPPONENT_PARAMS.pos_need_scale)["QB"] == (2.0, 1.5, 0.5)
 
 
 def test_qb_need_scale_pulls_qb1_earlier():

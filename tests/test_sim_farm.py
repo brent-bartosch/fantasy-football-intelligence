@@ -10,8 +10,11 @@ import sys
 
 import pytest
 
+from simfixtures import synthetic_priors
+
 import run_sim_farm
 import sim_report
+from ffi.sim.calibrate import QbTimingMeasurement
 from ffi.sim.strategy import StrategyParams
 
 # ---------------------------------------------------------------------------
@@ -545,7 +548,22 @@ def _seed_batch(
     return batch_id
 
 
-def test_render_report_includes_data_vintage_header(db):
+@pytest.fixture
+def stub_audit(monkeypatch):
+    """The Task 4 assumption audit builds the live pool/priors/history off the
+    connection and draws a uniform opponent sample -- data the seeded test DB
+    doesn't carry. The render_report integration tests below assert on OTHER
+    sections (vintage/qb-policy/defk/worst), so they stub the audit to a fixed
+    (lines, ok=True) pair; the audit's own logic is unit-tested separately in
+    `test_assumption_audit_lines_*`."""
+    monkeypatch.setattr(
+        sim_report,
+        "_run_assumption_audit",
+        lambda conn, date: (["## Assumption audit", ""], True),
+    )
+
+
+def test_render_report_includes_data_vintage_header(db, stub_audit):
     _seed_batch(
         db,
         "qb_hoard_12",
@@ -555,13 +573,13 @@ def test_render_report_includes_data_vintage_header(db):
         cell_idx=0,
         all_play_pct=0.55,
     )
-    report = sim_report.render_report(db, datetime.date(2026, 7, 10))
+    report, _ok = sim_report.render_report(db, datetime.date(2026, 7, 10))
     assert "data vintage" in report.lower() or "data-vintage" in report.lower()
     assert "42" in report  # snapshot id
     assert "deadbeef" in report  # git sha
 
 
-def test_render_report_includes_qb_policy_table(db):
+def test_render_report_includes_qb_policy_table(db, stub_audit):
     _seed_batch(
         db,
         "qb_hoard_12",
@@ -582,12 +600,12 @@ def test_render_report_includes_qb_policy_table(db):
         all_play_pct=0.50,
         grid="qb_subgrid",
     )
-    report = sim_report.render_report(db, datetime.date(2026, 7, 10))
+    report, _ok = sim_report.render_report(db, datetime.date(2026, 7, 10))
     assert "QB" in report
     assert "0.55" in report or "55.0" in report
 
 
-def test_render_report_defk_table_by_round(db):
+def test_render_report_defk_table_by_round(db, stub_audit):
     _seed_batch(
         db,
         "qb_hoard_12",
@@ -606,11 +624,11 @@ def test_render_report_defk_table_by_round(db):
         cell_idx=1,
         all_play_pct=0.53,
     )
-    report = sim_report.render_report(db, datetime.date(2026, 7, 10))
+    report, _ok = sim_report.render_report(db, datetime.date(2026, 7, 10))
     assert "defk_round" in report.lower() or "def/k" in report.lower()
 
 
-def test_render_report_worst_drafts_narrative_present(db):
+def test_render_report_worst_drafts_narrative_present(db, stub_audit):
     _seed_batch(
         db,
         "qb_hoard_12",
@@ -620,50 +638,61 @@ def test_render_report_worst_drafts_narrative_present(db):
         cell_idx=0,
         all_play_pct=0.30,
     )
-    report = sim_report.render_report(db, datetime.date(2026, 7, 10))
+    report, _ok = sim_report.render_report(db, datetime.date(2026, 7, 10))
     assert "worst" in report.lower()
 
 
-def test_render_report_warns_when_qb1_mean_outside_tolerance(db):
-    # The 11 OTHER teams (our own seat, position_slot 1, is excluded from the
-    # league-wide audit -- its QB timing is our deliberately-varied strategy
-    # knob, not organic opponent behavior) all take QB1 in round 1: mean 1.0
-    # vs historical 1.83 -- diff 0.83 > the 0.5 tolerance.
-    qb1_by_team = {slot: 1 for slot in range(1, 13)}
-    _seed_batch(
-        db,
-        "qb_hoard_12",
-        qb_plan_idx=0,
-        defk_round=14,
-        tier_break=0.0,
-        cell_idx=0,
-        all_play_pct=0.50,
-        qb1_round_by_team=qb1_by_team,
+# --- Task 4: uniform-sample assumption audit (pure logic, no DB) --------------
+
+_AUDIT_PRIORS = synthetic_priors()
+
+
+def _audit_measurement(qb1_mean: float):
+    """A minimal QbTimingMeasurement carrying a chosen opponent QB1-round mean
+    and a QB-heavy R1-3 pos-share (so the deviations table renders a row)."""
+    return QbTimingMeasurement(
+        n_drafts=100,
+        league_means=(qb1_mean, 5.0, 9.0),
+        per_slot={},
+        pos_share_by_band={("R1-3", "QB"): 0.5, ("R4-8", "RB"): 0.3},
     )
-    report = sim_report.render_report(db, datetime.date(2026, 7, 10))
-    assert "WARN" in report
 
 
-def test_render_report_no_warn_when_qb1_mean_within_tolerance(db):
-    # 11 other teams: 2 take QB1 in round 1, 9 in round 2 -> mean 20/11=1.818,
-    # within 0.5 of historical 1.83. Our own seat (slot 1) is excluded.
-    qb1_by_team = {1: 5, 2: 1, 3: 1}
-    qb1_by_team.update({slot: 2 for slot in range(4, 13)})
-    _seed_batch(
-        db,
-        "qb_hoard_12",
-        qb_plan_idx=0,
-        defk_round=14,
-        tier_break=0.0,
-        cell_idx=0,
-        all_play_pct=0.50,
-        qb1_round_by_team=qb1_by_team,
+# historical seasons-weighted QB1 mean = 2.0 here (single slot, seasons-weighted).
+_AUDIT_HIST = {1: {"qb1": 2.0, "qb2": 5.0, "qb3": 10.0, "seasons": 16.0}}
+
+
+def test_assumption_audit_lines_ok_within_tolerance():
+    lines, ok = sim_report._assumption_audit_lines(
+        _audit_measurement(2.3), _AUDIT_PRIORS, _AUDIT_HIST
     )
-    report = sim_report.render_report(db, datetime.date(2026, 7, 10))
-    assert "WARN" not in report
+    assert ok is True
+    text = "\n".join(lines)
+    assert "within" in text
+    assert "REGRESSION" not in text
 
 
-def test_render_report_exits_nonzero_when_batch_degraded(db, tmp_path, monkeypatch):
+def test_assumption_audit_lines_regression_outside_tolerance():
+    # QB1 mean 3.0 vs historical 2.0 -> diff 1.0 > 0.5 tolerance.
+    lines, ok = sim_report._assumption_audit_lines(
+        _audit_measurement(3.0), _AUDIT_PRIORS, _AUDIT_HIST
+    )
+    assert ok is False
+    assert "REGRESSION" in "\n".join(lines)
+
+
+def test_assumption_audit_pos_share_table_uses_band_averaged_priors():
+    lines, _ok = sim_report._assumption_audit_lines(
+        _audit_measurement(2.0), _AUDIT_PRIORS, _AUDIT_HIST
+    )
+    text = "\n".join(lines)
+    assert "priors share" in text  # table compares sim vs priors, not uniform
+    assert "| R1-3 | QB |" in text
+
+
+def test_render_report_exits_nonzero_when_batch_degraded(
+    db, tmp_path, monkeypatch, stub_audit
+):
     # `main_for_date` writes reports/sim-farm-<date>.md to disk. Never let a
     # test touch the real repo `reports/` dir -- redirect REPORTS_DIR to an
     # ephemeral tmp_path so this run can't clobber a real generated report
@@ -684,7 +713,9 @@ def test_render_report_exits_nonzero_when_batch_degraded(db, tmp_path, monkeypat
         sim_report.main_for_date(db, datetime.date(2026, 7, 10))
 
 
-def test_render_report_exits_zero_when_no_batch_degraded(db, tmp_path, monkeypatch):
+def test_render_report_exits_zero_when_no_batch_degraded(
+    db, tmp_path, monkeypatch, stub_audit
+):
     # See comment in test_render_report_exits_nonzero_when_batch_degraded above:
     # redirect REPORTS_DIR so this test can't overwrite the real report file.
     monkeypatch.setattr(sim_report, "REPORTS_DIR", tmp_path)
@@ -701,6 +732,32 @@ def test_render_report_exits_zero_when_no_batch_degraded(db, tmp_path, monkeypat
     # Should not raise.
     out = sim_report.main_for_date(db, datetime.date(2026, 7, 10))
     assert out.parent == tmp_path
+
+
+def test_main_for_date_exits_nonzero_on_audit_regression(db, tmp_path, monkeypatch):
+    # The audit is now a HARD regression check: a failing QB1 audit must make
+    # main_for_date exit nonzero even when no batch is degraded. Stub the audit
+    # to fail; the report is still written (evidence) before the exit.
+    monkeypatch.setattr(sim_report, "REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        sim_report,
+        "_run_assumption_audit",
+        lambda conn, date: (["## Assumption audit", "- REGRESSION: ..."], False),
+    )
+    _seed_batch(
+        db,
+        "qb_hoard_12",
+        qb_plan_idx=0,
+        defk_round=14,
+        tier_break=0.0,
+        cell_idx=0,
+        all_play_pct=0.50,
+        degraded=False,
+    )
+    with pytest.raises(SystemExit, match="regression"):
+        sim_report.main_for_date(db, datetime.date(2026, 7, 10))
+    # report written before the exit
+    assert (tmp_path / "sim-farm-2026-07-10.md").exists()
 
 
 def test_render_report_raises_when_no_batches_for_date(db):

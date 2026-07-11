@@ -13,15 +13,26 @@ existing, already-verified SQL -- never reimplemented here) into the same
 per-slot shape so `timing_gap_report` can diff measured-vs-historical
 directly.
 """
+import math
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass
 
 from ffi.sim.draft import run_draft, snake_position
+from ffi.sim.opponent import OpponentParams
 from ffi.sim.priors import SlotPriors, _band
 from ffi.sim.strategy import StrategyParams, make_strategy_fn
 
 OUR_FRANCHISE_SLOT = 12
+
+# Default fit grid (Task 4 brief): 6 x 4 x 3 = 72 candidates. s0 scales a
+# slot's QB prior share while it holds 0 QBs, s1 while it holds 1, s2 while it
+# holds >=2 (the last entry extends past the tuple's end -- see OpponentParams).
+DEFAULT_FIT_GRID: dict = {
+    "s0": (1.0, 1.5, 2.0, 3.0, 4.0, 6.0),
+    "s1": (0.75, 1.0, 1.5, 2.0),
+    "s2": (0.5, 0.75, 1.0),
+}
 
 
 @dataclass(frozen=True)
@@ -235,3 +246,82 @@ def timing_gap_report(measured: QbTimingMeasurement, historical: dict) -> str:
     lines.append("")
 
     return "\n".join(lines)
+
+
+def _per_slot_qb1_mae(measured: QbTimingMeasurement, historical: dict) -> float:
+    """Mean absolute error between measured and historical QB1 round, over the
+    opponent slots present in BOTH (slot 12, our seat, is absent from
+    `measured` by construction). NaN measured/None historical entries are
+    skipped -- a slot that never took a QB in the sample carries no signal."""
+    errs = []
+    for slot, m in measured.per_slot.items():
+        h = historical.get(slot)
+        if h is None:
+            continue
+        mq, hq = m.get("qb1"), h.get("qb1")
+        if mq is None or hq is None or math.isnan(mq):
+            continue
+        errs.append(abs(mq - hq))
+    return statistics.mean(errs) if errs else float("nan")
+
+
+def fit_qb_need_scale(
+    pool,
+    priors: SlotPriors,
+    historical: dict,
+    n_drafts: int,
+    base_seed: int,
+    grid: dict | None = None,
+) -> tuple:
+    """Grid-search the QB `pos_need_scale` tuple `(s0, s1, s2)` that best
+    reproduces `historical` QB-timing under `pool`/`priors`.
+
+    Every candidate runs `measure_qb_timing` with the SAME `base_seed`
+    (common random numbers -- the seat-permutation and opponent draws are
+    paired across candidates, so objective differences reflect the scale
+    change, not sampling noise). Objective (pinned in the Task 4 brief):
+
+        3*|m1-h1| + 2*|m2-h2| + 1*|m3-h3| + 0.5 * per_slot_qb1_MAE
+
+    with `h1,h2,h3` the seasons-weighted historical league means and
+    `m1,m2,m3` the measured opponent league means. Returns
+    `(best_params, trials)` where `trials` is every candidate's
+    `{"scale", "qb1", "qb2", "qb3", "per_slot_qb1_mae", "objective"}` dict,
+    sorted by objective ascending; `best_params` wraps `trials[0]["scale"]`.
+    """
+    grid = grid or DEFAULT_FIT_GRID
+    h1 = _seasons_weighted_mean(historical, "qb1")
+    h2 = _seasons_weighted_mean(historical, "qb2")
+    h3 = _seasons_weighted_mean(historical, "qb3")
+
+    trials = []
+    for s0 in grid["s0"]:
+        for s1 in grid["s1"]:
+            for s2 in grid["s2"]:
+                scale = (s0, s1, s2)
+                params = OpponentParams(pos_need_scale=(("QB", scale),))
+                m = measure_qb_timing(
+                    pool, priors, n_drafts, base_seed, opponent_params=params
+                )
+                m1, m2, m3 = m.league_means
+                per_slot_mae = _per_slot_qb1_mae(m, historical)
+                objective = (
+                    3 * abs(m1 - h1)
+                    + 2 * abs(m2 - h2)
+                    + 1 * abs(m3 - h3)
+                    + 0.5 * per_slot_mae
+                )
+                trials.append(
+                    {
+                        "scale": scale,
+                        "qb1": m1,
+                        "qb2": m2,
+                        "qb3": m3,
+                        "per_slot_qb1_mae": per_slot_mae,
+                        "objective": objective,
+                    }
+                )
+
+    trials.sort(key=lambda t: t["objective"])
+    best_params = OpponentParams(pos_need_scale=(("QB", trials[0]["scale"]),))
+    return best_params, trials
