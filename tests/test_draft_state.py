@@ -53,6 +53,48 @@ def test_torn_final_line_dropped_and_flagged(tmp_path):
     assert torn_tail is True
 
 
+def test_torn_tail_recovery_then_append_then_replay_again(tmp_path):
+    path = tmp_path / "draft.jsonl"
+    log = DraftLog(path)
+    log.append("meta", {"league_key": "nfl.l.123"})
+    log.append("pick", {"overall": 1})
+
+    with open(path, "ab") as f:
+        f.write(b'{"seq": 3, "ts"')  # no trailing newline -- torn mid-write
+
+    resumed_log, events, torn_tail = DraftLog.replay(path)
+    assert len(events) == 2
+    assert torn_tail is True
+
+    # The torn garbage must be gone from disk -- not just from the returned
+    # list -- so this append lands as a clean new line, not concatenated
+    # onto the un-terminated partial write.
+    e3 = resumed_log.append("pick", {"overall": 2})
+    assert e3.seq == 3
+
+    _, events2, torn_tail2 = DraftLog.replay(path)
+    assert [e.seq for e in events2] == [1, 2, 3]
+    assert torn_tail2 is False
+
+    # The clean prefix (the two events that survived the crash) is intact.
+    assert events2[0].kind == "meta"
+    assert events2[1].payload == {"overall": 1}
+
+
+def test_line_missing_required_key_raises(tmp_path):
+    path = tmp_path / "draft.jsonl"
+    log = DraftLog(path)
+    log.append("meta", {"league_key": "nfl.l.123"})
+
+    with open(path, "a") as f:
+        f.write(
+            json.dumps({"seq": 2, "ts": "x", "kind": "pick"}) + "\n"
+        )  # missing "payload"
+
+    with pytest.raises(TornTailError):
+        DraftLog.replay(path)
+
+
 def test_corrupt_middle_line_raises(tmp_path):
     path = tmp_path / "draft.jsonl"
     log = DraftLog(path)
