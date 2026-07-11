@@ -146,7 +146,7 @@ def timing_gap_report(measured: QbTimingMeasurement,
 
 The `opponent_params` argument is accepted-and-ignored-if-None in this task (threaded for real in Task 3 — keep the kwarg now so Task 4's fit loop doesn't need a signature change here).
 
-- [ ] **Step 1: Failing tests.** Create `tests/test_calibrate.py` with a synthetic fixture that needs no DB: build a 60-player pool by constructing `PoolPlayer` instances directly (5 positions × 12 players; give QBs the top proj_points/vorp; ADPs 1..60), and a `SlotPriors` built directly (`SlotPriors(latest_season=2025, pos_share={(s, r): share for s in 1..12 for r in 1..19}, params={})`) where `share` puts QB weight 0.97 in round 1 (rest split across RB/WR/TE/K/DEF respecting availability) and a flat share elsewhere:
+- [ ] **Step 1: Failing tests.** Create `tests/test_calibrate.py` with a synthetic fixture that needs no DB: build a synthetic pool by constructing `PoolPlayer` instances directly, sized so a full 228-pick draft COMPLETES under the starter-feasibility floors (plan amendment 2026-07-10: the original "60 players" was arithmetically infeasible — 12 teams × starters alone need 120+; size it like `tests/test_draft_engine.py`'s toy pool, ~350 players with realistic positional depth, e.g. QB≈30/RB≈90/WR≈120/TE≈40/K≈30/DEF≈32; QBs carry the top proj_points/vorp; ADPs 1..N ascending), and a `SlotPriors` built directly (`SlotPriors(latest_season=2025, pos_share={(s, r): share for s in 1..12 for r in 1..19}, params={})`) where `share` puts QB weight 0.97 in round 1 (rest split across RB/WR/TE/K/DEF respecting availability) and a flat share elsewhere:
 
 ```python
 def test_measure_qb_timing_qb_heavy_priors_yield_early_qb1():
@@ -517,7 +517,7 @@ def test_caller_state_not_mutated():
     # counts dicts and avail lists passed in are unchanged after the call.
 
 def test_perf_budget():
-    # 22 upcoming picks, 200 rollouts on the 60-player fixture: < 2.0s wall.
+    # 22 upcoming picks, 200 rollouts on the shared synthetic fixture: < 2.0s wall.
 ```
 
 Run → FAIL.
