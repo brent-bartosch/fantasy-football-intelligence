@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-"""THROWAWAY analysis (brainstorm de-risking, not production): does lowering the
-QB replacement rank (qb_hoard_24->12->0) improve our seat's ACTUAL-points finish?
+"""Guarded QB-rank search: which QB replacement rank (24/27/30/33/36) gives our
+seat the best ACTUAL-points finish under the tuned strategy, without starving
+depth or injury-robustness?
 
-Only QB VORP changes across the three hoard scenarios (compute_replacement_ranks:
-qb_extra_rostered feeds QB demand alone), so we recompute QB VORP in-memory from
-each backtest season's projections, re-run our seat against the same ADP-driven
-opponents, and grade on real nflverse points. Opponents are unaffected (they
-draft on ADP, not VORP), so any delta is purely our seat's response to QB VORP.
+Only QB VORP changes across ranks (the replacement baseline shifts; proj_points
+and -- per the rank-invariance finding -- tiers do not), so we recompute QB VORP
+in-memory from each backtest season's projections, re-run our seat (tuned
+strategy, `qb_by_round=(2,5,9)`) against the same ADP-driven opponents, and grade
+on real nflverse points. Opponents are unaffected (they draft on ADP, not VORP),
+so any delta is purely our seat's response to QB VORP. Each (rank, season) pool
+is checked with `assert_tier_invariance` (R4 residual guard) before grading, and
+each draft is scored on depth/injury guardrails alongside the headline all-play%:
+avg QB count, whether we rostered a real QB3, injury-robustness (all-play% after
+losing our best QB), and top-3 finish rate. Interpretation happens in Task 2.
 
 Sanity gate: recomputing at rank 36 must reproduce the stored qb_hoard_12 VORP.
 """
+import argparse
 import os
 import statistics
 from pathlib import Path
@@ -25,17 +32,19 @@ from dataclasses import replace
 
 from ffi.db import connect
 from ffi.sim.backtest import BACKTEST_SEASONS, load_backtest_pool, load_points_lookup
-from ffi.sim.draft import run_draft, snake_position
+from ffi.sim.draft import run_draft
+from ffi.sim.pool import PoolPlayer
 from ffi.sim.priors import build_slot_priors
 from ffi.sim.season import evaluate_league
 from ffi.sim.strategy import StrategyParams, make_strategy_fn
+from ffi.valuation.tiers import gmm_tiers
 
-N_SEEDS = 30
-# rank = 24 starters + qb_extra_rostered. hoard_0/12/24 -> ranks 24/36/48.
-SCENARIOS = {"hoard_0": 24, "hoard_12": 36, "hoard_24": 48}
-# Deadlines OFF so QB VORP alone drives QB timing (feasibility still backstops
-# the 2-QB requirement late) -- this maximally exposes the scenario effect.
-STRAT = StrategyParams(qb_by_round=(19, 19, 19), qb_not_before=(1, 1, 1))
+N_SEEDS = 50
+# rank = 24 starters + qb_extra_rostered. Searched at 3-pick increments.
+RANKS = [24, 27, 30, 33, 36]
+# Tuned strategy (Phase 4 calibration): QB #1/2/3 targeted by end of rounds
+# 2/5/9, capped at tier 1/2/99 (untiered) respectively.
+STRAT = StrategyParams(qb_by_round=(2, 5, 9), qb_tier_targets=(1, 2, 99))
 
 
 def qb_vorp_at_rank(pool, rank):
@@ -46,11 +55,85 @@ def qb_vorp_at_rank(pool, rank):
 
 
 def repriced_pool(pool, rank):
+    """Pool with QB vorp recomputed at `rank`; tiers KEPT as-is. Tiers cluster
+    on projected points, which `rank` never changes (it only shifts the QB
+    baseline, a constant on vorp) -- so the stored tiers ARE this rank's tiers.
+    No per-rank re-tiering or materialization needed."""
     new_vorp = qb_vorp_at_rank(pool, rank)
     return [replace(p, vorp=new_vorp[p.ref]) if p.position == "QB" else p for p in pool]
 
 
+def _partition(labels):
+    m, out = {}, []
+    for x in labels:
+        if x not in m:
+            m[x] = len(m)
+        out.append(m[x])
+    return out
+
+
+def assert_tier_invariance(pool):
+    """R4 residual guard: regmm QB tiers on this pool's vorp and confirm it
+    reproduces the stored tiers. A failure means the gmm implementation
+    changed -- NOT that a rank collapsed tiers (which is impossible)."""
+    qbs = [p for p in pool if p.position == "QB"]
+    regmm = gmm_tiers([p.vorp for p in qbs])
+    assert _partition(regmm) == _partition(
+        [p.tier for p in qbs]
+    ), "tier-invariance broken (gmm impl changed?)"
+
+
+def injury_robustness(rosters, our_pos, points_lookup, seed):
+    """Our actual-points all-play% AFTER losing our best (highest-vorp) QB --
+    a roster with a real QB3 barely drops; a thin one craters (one QB slot
+    scores 0). Directly measures the QB3-protection guardrail."""
+    roster = list(rosters[our_pos])
+    qbs = [p for p in roster if p.position == "QB"]
+    qb1 = max(qbs, key=lambda p: p.vorp)
+    injured = dict(rosters)
+    injured[our_pos] = [p for p in roster if p.ref != qb1.ref]
+    return evaluate_league(
+        injured, cv_by_pos={}, seed=seed, points_lookup=points_lookup
+    )[our_pos]
+
+
+def _selftest():
+    # repriced_pool: QB vorp changes with rank, but tiers are KEPT (rank-invariant)
+    # NOTE: brief's synthetic pool used range(5), but qb_vorp_at_rank indexes
+    # qb_pts[rank - 1] with no bounds check, so a 5-QB pool + rank=24 raises
+    # IndexError (found in RED run). Widened to 30 QBs -- enough for rank=24
+    # to be a valid index -- while keeping the same assertions/intent.
+    qbs = [
+        PoolPlayer(
+            ref=f"q{i}",
+            name=f"QB{i}",
+            position="QB",
+            proj_points=400 - 3 * i,
+            vorp=300 - 4 * i,
+            tier=(1 if i < 2 else 2),
+            adp=float(i + 1),
+            gsis_id=f"q{i}",
+        )
+        for i in range(30)
+    ]
+    rp = repriced_pool(qbs, 24)
+    assert [p.vorp for p in rp] != [p.vorp for p in qbs], "rank 24 must change QB vorp"
+    assert [p.tier for p in rp] == [
+        p.tier for p in qbs
+    ], "tiers must be KEPT (rank-invariant)"
+    print("selftest OK")
+
+
 def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--selftest", action="store_true", help="run helper self-test and exit"
+    )
+    args = ap.parse_args()
+    if args.selftest:
+        _selftest()
+        return
+
     conn = connect()
     priors = build_slot_priors(conn)
 
@@ -65,43 +148,63 @@ def main():
     print()
 
     print(
-        f"{'scenario':>9} {'season':>6} {'actual all-play%':>16} {'QBs':>5} {'QB1 rd':>7}"
+        f"{'rank':>5} {'season':>6} {'all-play%':>10} {'2SE':>6} {'QBs':>5} "
+        f"{'QB3%':>6} {'injury%':>8} {'top3%':>7}"
     )
-    agg = {s: [] for s in SCENARIOS}
-    for name, rank in SCENARIOS.items():
+    metrics = ("pct", "qb_count", "has_qb3", "injury", "top3")
+    pooled = {rank: {k: [] for k in metrics} for rank in RANKS}
+    for rank in RANKS:
         for season in BACKTEST_SEASONS:
             pool = repriced_pool(load_backtest_pool(conn, season), rank)
+            assert_tier_invariance(pool)  # R4 residual guard (tiers are rank-invariant)
             lookup = load_points_lookup(conn, season)
             pick_fn = make_strategy_fn(STRAT)
-            pcts, qb_counts, qb1_rounds = [], [], []
+            cell = {k: [] for k in metrics}
             for i in range(N_SEEDS):
                 seed = 900_000 + season * 100 + i
                 res = run_draft(pool, priors, pick_fn, seed=seed, our_franchise_slot=12)
-                pcts.append(
-                    evaluate_league(
-                        res.rosters, cv_by_pos={}, seed=seed, points_lookup=lookup
-                    )[res.our_position]
+                standings = evaluate_league(
+                    res.rosters, cv_by_pos={}, seed=seed, points_lookup=lookup
                 )
+                our_pct = standings[res.our_position]
+                place = sum(1 for v in standings.values() if v > our_pct) + 1
                 qbs = [
                     p
                     for p in res.picks
                     if p["position_slot"] == res.our_position and p["pos"] == "QB"
                 ]
-                qb_counts.append(len(qbs))
-                qb1_rounds.append(min(snake_position(p["overall"])[0] for p in qbs))
-            m = statistics.mean(pcts)
-            agg[name].extend(pcts)
+                cell["pct"].append(our_pct)
+                cell["qb_count"].append(len(qbs))
+                cell["has_qb3"].append(len(qbs) >= 3)
+                cell["injury"].append(
+                    injury_robustness(res.rosters, res.our_position, lookup, seed)
+                )
+                cell["top3"].append(place <= 3)
+            for k in metrics:
+                pooled[rank][k].extend(cell[k])
+            se = statistics.stdev(cell["pct"]) / (len(cell["pct"]) ** 0.5)
             print(
-                f"{name:>9} {season:>6} {m:>15.1%} {statistics.mean(qb_counts):>5.1f} "
-                f"{statistics.mean(qb1_rounds):>7.1f}"
+                f"{rank:>5} {season:>6} {statistics.mean(cell['pct']):>9.1%} "
+                f"{2 * se:>5.1%} {statistics.mean(cell['qb_count']):>5.1f} "
+                f"{statistics.mean(cell['has_qb3']):>5.1%} "
+                f"{statistics.mean(cell['injury']):>7.1%} "
+                f"{statistics.mean(cell['top3']):>6.1%}"
             )
 
-    print(f"\n{'scenario':>9} {'pooled actual all-play%':>24} {'2*SE':>8}")
-    for name in SCENARIOS:
-        vals = agg[name]
-        m = statistics.mean(vals)
-        se = statistics.stdev(vals) / (len(vals) ** 0.5)
-        print(f"{name:>9} {m:>23.1%} {2*se:>7.1%}")
+    print(
+        f"\n{'rank':>5} {'pooled all-play%':>17} {'2SE':>6} {'QBs':>5} "
+        f"{'QB3%':>6} {'injury%':>8} {'top3%':>7}"
+    )
+    for rank in RANKS:
+        vals = pooled[rank]
+        se = statistics.stdev(vals["pct"]) / (len(vals["pct"]) ** 0.5)
+        print(
+            f"{rank:>5} {statistics.mean(vals['pct']):>16.1%} {2 * se:>5.1%} "
+            f"{statistics.mean(vals['qb_count']):>5.1f} "
+            f"{statistics.mean(vals['has_qb3']):>5.1%} "
+            f"{statistics.mean(vals['injury']):>7.1%} "
+            f"{statistics.mean(vals['top3']):>6.1%}"
+        )
 
 
 if __name__ == "__main__":
