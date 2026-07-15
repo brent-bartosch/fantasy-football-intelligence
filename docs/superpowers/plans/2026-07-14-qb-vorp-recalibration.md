@@ -16,6 +16,8 @@
 - The **guarded search is the arbiter** of the rank; the D7 gate is the discipline/re-baseline step, NOT the goodness test ([design §4](../specs/2026-07-14-qb-vorp-recalibration-design.md)).
 - QB replacement rank = `24 + qb_extra_rostered` (only QB is padded; verified in `ffi/valuation/baseline.py`).
 - The 6 default-pin sites (design §3): `ffi/sim/strategy.py` `StrategyParams.scenario`; `ffi/sim/backtest.py` `VORP_SCENARIO`; `scripts/run_sim_farm.py` `SCENARIOS_MAIN`; `scripts/build_backtest_pools.py` `build_pool(conn, "qb_hoard_12")`; `scripts/draft_assistant.py` snapshot scenario; `scripts/build_valuation.py` lines ~172/182.
+- **Freeze:** land the whole change (through the Task 4 re-baseline) before the ~Aug 22 code freeze; if it slips, keep rank 36 — status quo is the safe fallback (ADR Domain 8 / risk R11).
+- **Tiers are rank-invariant** (proven: production QB tiers identical across rank 24 vs 36, 0/249 mismatch; `gmm` clusters on projected points, which the rank never changes). The search therefore recomputes VORP only and **keeps stored tiers** — no per-rank materialization.
 
 ---
 
@@ -36,50 +38,61 @@
 
 **Interfaces:**
 - Consumes: `build_slot_priors(conn)`, `load_backtest_pool(conn, season)`, `load_points_lookup(conn, season)`, `run_draft(pool, priors, pick_fn, seed=, our_franchise_slot=12)`, `evaluate_league(rosters, cv_by_pos={}, seed=, points_lookup=)`, `make_strategy_fn(StrategyParams(...))`, `gmm_tiers(values) -> list[int]` (from `ffi.valuation.tiers`), `PoolPlayer` (frozen dataclass; use `dataclasses.replace`).
-- Produces: a `--selftest` mode and a search that prints, per rank, actual all-play % ± 2SE, avg QB count, % with a real QB3, mean injury-robustness, QB tier count, top-3 finish rate, and a per-season breakdown.
+- Produces: a `--selftest` mode and a search that prints, per rank, actual all-play % ± 2SE, avg QB count, % with a real QB3, mean injury-robustness, top-3 finish rate, and a per-season breakdown.
 
-- [ ] **Step 1: Write the failing self-test for the two guardrail helpers**
+- [ ] **Step 1: Write the failing self-test for the recompute + guardrail helpers**
 
-Add near the top of `scripts/qb_vorp_sweep.py` (after imports) a `--selftest` path in `main()` that exercises `retier_qbs` and `injury_robustness` on a synthetic pool. First add the test body that will fail because the helpers don't exist yet:
+Add near the top of `scripts/qb_vorp_sweep.py` (after imports) a `--selftest` path in `main()` that exercises `repriced_pool` and `injury_robustness` on a synthetic pool. First add the test body that will fail because the helpers don't exist yet:
 
 ```python
 def _selftest():
-    from dataclasses import replace as _replace
-    # 5 synthetic QBs with descending vorp -> gmm should yield >=2 tiers
+    # repriced_pool: QB vorp changes with rank, but tiers are KEPT (rank-invariant)
     qbs = [PoolPlayer(ref=f"q{i}", name=f"QB{i}", position="QB",
-                      proj_points=400 - 30 * i, vorp=300 - 40 * i, tier=1,
-                      adp=float(i + 1), gsis_id=f"q{i}") for i in range(5)]
-    retiered = retier_qbs(qbs)
-    assert len({p.tier for p in retiered}) >= 2, "gmm should split 5 spread QBs into >=2 tiers"
-    # injury_robustness: a roster with a real QB3 loses less than one without
+                      proj_points=400 - 30 * i, vorp=300 - 40 * i,
+                      tier=(1 if i < 2 else 2), adp=float(i + 1), gsis_id=f"q{i}")
+           for i in range(5)]
+    rp = repriced_pool(qbs, 24)
+    assert [p.vorp for p in rp] != [p.vorp for p in qbs], "rank 24 must change QB vorp"
+    assert [p.tier for p in rp] == [p.tier for p in qbs], "tiers must be KEPT (rank-invariant)"
     print("selftest OK")
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `PYTHONPATH=src uv run python scripts/qb_vorp_sweep.py --selftest`
-Expected: `NameError: name 'retier_qbs' is not defined`.
+Expected: `NameError: name 'repriced_pool' is not defined`.
 
 - [ ] **Step 3: Implement the recompute + guardrail helpers**
 
-Add these helpers to `scripts/qb_vorp_sweep.py` (replaces the throwaway `repriced_pool`; keep `qb_vorp_at_rank`):
+Add these helpers to `scripts/qb_vorp_sweep.py` (replaces the throwaway in-place recompute; keep `qb_vorp_at_rank`). **Tiers are kept, not recomputed** — they are rank-invariant (Global Constraints; proven 0/249 production mismatch):
 
 ```python
 from ffi.valuation.tiers import gmm_tiers
 
-def retier_qbs(qbs):
-    """Reassign QB tiers via gmm on their (already-recomputed) vorps -- faithful
-    to how build_valuation materializes tiers, done in-memory so no per-rank
-    scenario needs materializing for the search."""
-    tiers = gmm_tiers([p.vorp for p in qbs])
-    return [replace(p, tier=t) for p, t in zip(qbs, tiers)]
-
 def repriced_pool(pool, rank):
-    """Pool with QB vorp recomputed at `rank` AND QB tiers regmm'd. Non-QB
-    untouched (only QB replacement rank changes across scenarios)."""
+    """Pool with QB vorp recomputed at `rank`; tiers KEPT as-is. Tiers cluster
+    on projected points, which `rank` never changes (it only shifts the QB
+    baseline, a constant on vorp) -- so the stored tiers ARE this rank's tiers.
+    No per-rank re-tiering or materialization needed."""
     new_vorp = qb_vorp_at_rank(pool, rank)
-    qbs = retier_qbs([replace(p, vorp=new_vorp[p.ref]) for p in pool if p.position == "QB"])
-    return qbs + [p for p in pool if p.position != "QB"]
+    return [replace(p, vorp=new_vorp[p.ref]) if p.position == "QB" else p for p in pool]
+
+def _partition(labels):
+    m, out = {}, []
+    for x in labels:
+        if x not in m:
+            m[x] = len(m)
+        out.append(m[x])
+    return out
+
+def assert_tier_invariance(pool):
+    """R4 residual guard: regmm QB tiers on this pool's vorp and confirm it
+    reproduces the stored tiers. A failure means the gmm implementation
+    changed -- NOT that a rank collapsed tiers (which is impossible)."""
+    qbs = [p for p in pool if p.position == "QB"]
+    regmm = gmm_tiers([p.vorp for p in qbs])
+    assert _partition(regmm) == _partition([p.tier for p in qbs]), \
+        "tier-invariance broken (gmm impl changed?)"
 
 def injury_robustness(rosters, our_pos, points_lookup, seed):
     """Our actual-points all-play% AFTER losing our best (highest-vorp) QB --
@@ -98,16 +111,16 @@ def injury_robustness(rosters, our_pos, points_lookup, seed):
 Run: `PYTHONPATH=src uv run python scripts/qb_vorp_sweep.py --selftest`
 Expected: `selftest OK`.
 
-- [ ] **Step 5: Wire the guarded search (realistic strategy + guardrails + logging + tier assert)**
+- [ ] **Step 5: Wire the guarded search (realistic strategy + guardrails + logging + invariance guard)**
 
-Replace the search body so it: uses the tuned strategy `StrategyParams(qb_by_round=(2, 5, 9), qb_tier_targets=(1, 2, 99))`; searches ranks `[24, 27, 30, 33, 36]`; for each (rank, season) builds `repriced_pool`, **asserts ≥2 distinct QB tiers survive** (else prints a loud `TIER-COLLAPSE` warning and marks `qb_tier_targets` inert for that rank — risk R4); runs 50 seeds; records per draft the actual all-play %, QB count, has-QB3 flag, `injury_robustness`, and top-3 finish flag (rank ≤3 of 12); prints a per-rank + per-season table and a pooled summary.
+Replace the search body so it: uses the tuned strategy `StrategyParams(qb_by_round=(2, 5, 9), qb_tier_targets=(1, 2, 99))`; searches ranks `[24, 27, 30, 33, 36]`; for each (rank, season) builds `repriced_pool` and calls `assert_tier_invariance(pool)` once (R4 residual guard); runs 50 seeds; records per draft the actual all-play %, QB count, has-QB3 flag, `injury_robustness`, and top-3 finish flag (rank ≤3 of 12); prints a per-rank + per-season table and a pooled summary.
 
 ```python
 N_SEEDS = 50
 RANKS = [24, 27, 30, 33, 36]
 STRAT = StrategyParams(qb_by_round=(2, 5, 9), qb_tier_targets=(1, 2, 99))
 # ... per (rank, season): pool = repriced_pool(load_backtest_pool(conn, season), rank)
-#     assert len({p.tier for p in pool if p.position=='QB'}) >= 2, f"TIER-COLLAPSE rank {rank} season {season}"
+#     assert_tier_invariance(pool)   # R4 residual guard (tiers are rank-invariant)
 #     pick_fn = make_strategy_fn(STRAT); grade each of N_SEEDS drafts on actual points;
 #     also compute injury_robustness and top-3 flag per draft.
 ```
@@ -223,7 +236,7 @@ git commit -m "feat(valuation): switch default scenario pointer to <WINNER_SCENA
 
 - [ ] **Step 1: Materialize the winner's current-season valuation (intermediate ranks only)**
 
-If `<WINNER_SCENARIO>` is `qb_hoard_3/6/9`, add it to `SCENARIOS` in `build_valuation.py`; `qb_hoard_0`/`_24` are already materialized. Then:
+If `<WINNER_SCENARIO>` is `qb_hoard_3/6/9`, add it to `SCENARIOS` in `build_valuation.py`; `qb_hoard_0` (rank 24) and `qb_hoard_12` (rank 36) are already materialized. Then:
 Run: `PYTHONPATH=src uv run python scripts/build_valuation.py`
 Expected: prints row counts; `<WINNER_SCENARIO>` now present.
 Verify vintage consistency (risk R6):
@@ -306,7 +319,7 @@ git commit -m "test+docs(valuation): update assertions for <WINNER_SCENARIO> def
 
 ## Self-review
 
-**Spec coverage:** guarded search (Task 1–2) ✓; realistic tuned strategy + `qb_tier_targets` ✓ (Task 1 Step 5); depth + injury-robustness guardrails ✓ (Task 1 helpers, Task 2 criterion); in-memory recompute avoiding pre-materialization ✓ (Task 1); pointer switch at 6 sites ✓ (Task 3); never-mutate-`qb_hoard_12` ✓ (Global Constraints, Task 3 grep); rebuild + re-baseline ✓ (Task 4); test updates ✓ (Task 5); rollback = pointer revert ✓ (implicit — Task 3 is a clean revert). Risk coverage: R1 (Task 3 grep), R2 (Task 4 Step 5), R3 (Task 2 100-seed), R4 (Task 1 tier assert), R6 (Task 4 Step 1 vintage check), R8/R10 (Task 2 Step 3 stop-gates), R9 (Task 4 Step 4), R13 (Task 1 self-test + rank assert). R5/R7 are surfaced (upside metric logged Task 1; projection-reliability is a documented non-goal fallback).
+**Spec coverage:** guarded search (Task 1–2) ✓; realistic tuned strategy + `qb_tier_targets` ✓ (Task 1 Step 5); depth + injury-robustness guardrails ✓ (Task 1 helpers, Task 2 criterion); in-memory VORP recompute keeping stored (rank-invariant) tiers — a **deliberate correction of spec §1's original "materialize each rank" prerequisite**, which rested on the false premise that tiers depend on the rank; tiers cluster on projected points (rank-invariant, proven 0/249 production mismatch), so materializing intermediates was unnecessary and would have re-introduced R6 (Task 1, spec §1 corrected 2026-07-14); pointer switch at 6 sites ✓ (Task 3); never-mutate-`qb_hoard_12` ✓ (Global Constraints, Task 3 grep); rebuild + re-baseline ✓ (Task 4); test updates ✓ (Task 5); rollback = pointer revert ✓ (implicit — Task 3 is a clean revert). Risk coverage: R1 (Task 3 grep), R2 (Task 4 Step 5), R3 (Task 2 100-seed), R4 (Task 1 tier assert), R6 (Task 4 Step 1 vintage check), R8/R10 (Task 2 Step 3 stop-gates), R9 (Task 4 Step 4), R13 (Task 1 self-test + rank assert). R5/R7 are surfaced (upside metric logged Task 1; projection-reliability is a documented non-goal fallback).
 
 **Placeholder scan:** `<WINNER_SCENARIO>`/`<WINNER_EXTRA>`/`<R>` are intentional parameters resolved by the Task-2 decision, not placeholders — every task states how to resolve them. No TBDs.
 
