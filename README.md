@@ -1,3 +1,10 @@
+
+
+
+
+
+
+
 # Fantasy Football Draft Intelligence
 
 Draft-intelligence stack for the NAJEE 12-team, 2-QB Yahoo league (2026 draft ~mid-August): Postgres 15 + Python (uv), with projection ingest (Sleeper/FantasyPros/Yahoo), a golden-tested league-scoring engine, VORP valuation with GMM tiers, a Monte Carlo draft simulator with opponent models mined from 16 seasons of league history, 2023–25 backtests, and a nightly sim farm.
