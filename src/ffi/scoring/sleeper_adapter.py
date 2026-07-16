@@ -56,7 +56,7 @@ _TWO_PT_KEYS = ("pass_2pt", "rush_2pt", "rec_2pt")
 _IGNORED_EXACT = {
     "gp",  # games played — metadata, not scored
     "cmp_pct",  # derived %, redundant with pass_cmp/pass_att
-    "pass_att",  # not individually scored (cmp/inc are)
+    "pass_att",  # not scored directly; used to DERIVE incompletions (att-cmp) below
     "pass_sack",  # not observed live (only bare 'sack' appears, DEF-only — see below)
     "rec_tgt",  # not observed live; targets are not scored
     "fgm",
@@ -171,4 +171,26 @@ def stat_line_from_sleeper(record: dict) -> StatLine:
     two = sum(float(stats[k]) for k in _TWO_PT_KEYS if k in stats)
     if any(k in stats for k in _TWO_PT_KEYS):
         fields["two_point_conversions"] = two
+    # Incompletions are scored (-0.5, config/scoring/v1.json) but Sleeper never
+    # emits `pass_inc` at the season level -- only `pass_att` (otherwise ignored)
+    # and `pass_cmp`. Derive incompletions = att - cmp so the penalty our own
+    # scoring config specifies is actually applied; without this every projected
+    # QB is over-scored by 0.5*(att-cmp) (~50-100 pts) and the QB ranking is
+    # distorted (the penalty scales with pass volume). Only when `pass_inc`
+    # wasn't already mapped above (schema-safety path) and both att & cmp are
+    # present. att < cmp is physically impossible -> fail loud (R5), never emit a
+    # negative incompletion count (which would ADD points, wrong direction).
+    if (
+        "pass_incompletions" not in fields
+        and "pass_att" in stats
+        and "pass_cmp" in stats
+    ):
+        inc = float(stats["pass_att"]) - float(stats["pass_cmp"])
+        if inc < 0:
+            raise IngestError(
+                f"sleeper pass_att ({stats['pass_att']}) < pass_cmp "
+                f"({stats['pass_cmp']}) -- impossible; refusing to derive a "
+                "negative incompletion count"
+            )
+        fields["pass_incompletions"] = inc
     return StatLine(**fields)

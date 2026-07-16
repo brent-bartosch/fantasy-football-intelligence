@@ -53,6 +53,33 @@ def test_qb_mapping():
     assert line.receptions is None  # absent for this QB record
 
 
+def test_incompletions_derived_when_pass_inc_absent():
+    """Live Sleeper season-level projections carry pass_att + pass_cmp but NOT
+    pass_inc (verified against the real snapshot). The incompletion penalty
+    (-0.5, config v1) must still apply -> derive inc = att - cmp. Regression for
+    the bug where every projected QB was over-scored by 0.5*(att-cmp) because
+    pass_incompletions stayed None. The old fixture masked this by including
+    pass_inc explicitly."""
+    rec = {
+        "player_id": "1",
+        "player": {"position": "QB"},
+        "stats": {"pass_att": 514.0, "pass_cmp": 316.0, "pass_yd": 3651.0},
+    }
+    line = stat_line_from_sleeper(rec)
+    assert line.pass_completions == 316.0
+    assert line.pass_incompletions == 198.0  # 514 - 316, derived (no pass_inc key)
+
+
+def test_incompletions_impossible_att_lt_cmp_fails_loud():
+    rec = {
+        "player_id": "1",
+        "player": {"position": "QB"},
+        "stats": {"pass_att": 300.0, "pass_cmp": 350.0},
+    }
+    with pytest.raises(IngestError, match="pass_att.*<.*pass_cmp"):
+        stat_line_from_sleeper(rec)
+
+
 def test_unknown_stat_key_fails_loud():
     rec = {**QB_REC, "stats": {**QB_REC["stats"], "brand_new_stat": 1.0}}
     with pytest.raises(IngestError, match="unmapped"):
