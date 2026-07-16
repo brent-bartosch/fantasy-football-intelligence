@@ -26,3 +26,4 @@ run; the git sha is HEAD at run time.
 | 2026-07-11 | refresh | PASS | applied 228/228 picks; token refreshed 1x proactively (margin 900s); 0 missed | e66edbc |
 | 2026-07-11 | crash | PASS | crashed@101, resumed to 228/228; taken== counts== overall==(228) mode==(LIVE) | e66edbc |
 | 2026-07-11 | lag | PASS | p95=7.87s median=2.93s max=7.93s n=41 (interval=10.0s [ADR ceiling], cadence=2.5s) | e66edbc |
+| 2026-07-16 | lag | PASS | p95=8.06s median=3.10s max=8.10s n=41 (interval=10.0s [ADR ceiling], cadence=2.5s) | c035f0b |

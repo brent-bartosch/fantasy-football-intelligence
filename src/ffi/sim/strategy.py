@@ -110,6 +110,25 @@ class StrategyParams:
     qb_tier_targets: tuple = ()  # QB #n (rule 4 only) capped at tier <= this[n]
 
 
+# The live-deployed roster-construction strategy (2026-07-15 backtest finding,
+# actual-points playoff%): QB3 delayed (allowed from R10, deadline R14) and TE
+# depth capped at 2 -- single-start positions want starters + ONE insurance, not
+# VORP-driven hoarding (VORP ignores P(it ever starts)). +19pp playoff% vs the
+# front-QB3/TE3 default (StrategyParams()'s bare defaults). See
+# scripts/positional_depth.py, scripts/qb_timing_h2h.py.
+#
+# SINGLE SOURCE OF TRUTH: every "what do we actually draft" surface -- the live
+# assistant (scripts/draft_assistant.py) and the demo (scripts/demo_single_draft.py)
+# -- imports THIS constant, so a demo/nightly view can never silently drift from
+# what the assistant ships. Changing the deployed strategy = editing this one
+# object (and re-running the ADR D7 gate, since it is a live-strategy change).
+DEPLOYED_PARAMS = StrategyParams(
+    qb_by_round=(2, 5, 14),
+    qb_not_before=(1, 1, 10),
+    caps=(("QB", 4), ("RB", 9), ("WR", 9), ("TE", 2), ("K", 1), ("DEF", 1)),
+)
+
+
 def _unmet_positions(counts: dict) -> list[str]:
     """Positions where drafting one more would reduce `required_picks(counts)`
     -- an open starter slot, or a FLEX-eligible position while FLEX is open."""

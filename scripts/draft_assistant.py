@@ -39,7 +39,7 @@ from ffi.draft.state import DraftLog
 from ffi.ids import team_slot
 from ffi.scoring.config import load_config_v1
 from ffi.signals_apply import adjusted_pool, cumulative_pct
-from ffi.sim.strategy import StrategyParams
+from ffi.sim.strategy import DEPLOYED_PARAMS
 from ffi.sim.pool import build_pool
 from ffi.sim.priors import build_slot_priors
 from ffi.yahoo_client import (
@@ -245,16 +245,12 @@ def main() -> None:
         scenario=args.scenario,
         log_path=args.log_path,
         board_vintage=vintage,
-        # Roster-construction strategy (2026-07-15 backtest finding, actual-points
-        # playoff%): let QB3 fall late (allowed from R10, deadline R14) and cap TE
-        # depth at 2 -- single-start positions want starters + ONE insurance, not
-        # VORP-driven hoarding (VORP ignores P(it starts)). +19pp playoff vs the
-        # front-QB3/TE3 default. See scripts/positional_depth.py, qb_timing_h2h.py.
-        params=StrategyParams(
-            qb_by_round=(2, 5, 14),
-            qb_not_before=(1, 1, 10),
-            caps=(("QB", 4), ("RB", 9), ("WR", 9), ("TE", 2), ("K", 1), ("DEF", 1)),
-        ),
+        # Roster-construction strategy: the SINGLE SOURCE OF TRUTH lives in
+        # ffi.sim.strategy.DEPLOYED_PARAMS (QB3 late + TE cap 2; see its docstring
+        # for the +19pp playoff% rationale). Importing it here -- rather than
+        # re-spelling the knobs -- is what keeps the demo/nightly views from
+        # drifting from what the assistant actually ships.
+        params=DEPLOYED_PARAMS,
     )
 
     # The PAPER floor is always written before the room opens (mode-independent).

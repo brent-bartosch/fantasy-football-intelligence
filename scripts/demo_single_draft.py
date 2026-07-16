@@ -11,7 +11,7 @@ import argparse
 from ffi.db import connect
 from ffi.sim.pool import build_pool
 from ffi.sim.priors import build_slot_priors
-from ffi.sim.strategy import StrategyParams, make_strategy_fn
+from ffi.sim.strategy import DEPLOYED_PARAMS, StrategyParams, make_strategy_fn
 from ffi.sim.draft import run_draft, TEAMS, ROUNDS
 from ffi.sim.season import evaluate_league, fit_weekly_points_cv
 
@@ -25,7 +25,15 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--position", type=int, default=5, help="our draft position 1-12")
     ap.add_argument("--scenario", default="qb_hoard_12")
-    ap.add_argument("--n-seasons", type=int, default=50, help="MC seasons for evaluation")
+    ap.add_argument(
+        "--n-seasons", type=int, default=50, help="MC seasons for evaluation"
+    )
+    ap.add_argument(
+        "--default",
+        action="store_true",
+        help="use bare StrategyParams() defaults (front-QB3 / TE3) instead of the "
+        "live-deployed strategy -- for A/B contrast only",
+    )
     args = ap.parse_args()
 
     conn = connect()
@@ -34,12 +42,28 @@ def main():
     priors = build_slot_priors(conn)
     print(f"  Pool: {len(pool)} players, priors: latest_season={priors.latest_season}")
 
-    params = StrategyParams()  # default strategy (calibrated opponents, K:1/DEF:1 caps)
+    # Default: show what the LIVE assistant actually drafts (DEPLOYED_PARAMS --
+    # QB3 late + TE cap 2). --default drops back to the bare defaults so the two
+    # can be compared side by side. Anchoring on DEPLOYED_PARAMS is what stops the
+    # demo from misrepresenting the shipped strategy.
+    params = StrategyParams() if args.default else DEPLOYED_PARAMS
+    label = (
+        "DEFAULT (front-QB3/TE3)" if args.default else "DEPLOYED (QB3-late/TE-cap-2)"
+    )
+    print(f"  Strategy: {label}")
     fn = make_strategy_fn(params)
-    print(f"\nRunning draft (seed={args.seed}, our_position={args.position}, "
-          f"scenario={args.scenario})...")
-    result = run_draft(pool, priors, fn, seed=args.seed,
-                       our_franchise_slot=12, our_position=args.position)
+    print(
+        f"\nRunning draft (seed={args.seed}, our_position={args.position}, "
+        f"scenario={args.scenario})..."
+    )
+    result = run_draft(
+        pool,
+        priors,
+        fn,
+        seed=args.seed,
+        our_franchise_slot=12,
+        our_position=args.position,
+    )
 
     total_picks = len(result.picks)
     print(f"  Draft complete: {total_picks} picks, {ROUNDS} rounds")
@@ -51,7 +75,9 @@ def main():
     our_pick_dicts = [p for p in result.picks if p["franchise_slot"] == 12]
 
     print(f"\n{'='*70}")
-    print(f"OUR ROSTER (position {our_pos}, franchise slot 12) — {len(our_roster)} picks")
+    print(
+        f"OUR ROSTER (position {our_pos}, franchise slot 12) — {len(our_roster)} picks"
+    )
     print(f"{'='*70}")
 
     by_pos = {}
@@ -65,7 +91,9 @@ def main():
             for r, p in sorted(by_pos[pos]):
                 tier_str = f" tier {p.tier}" if p.tier else ""
                 adp_str = f"  adp {p.adp:.0f}" if p.adp else ""
-                print(f"  {pos:>3}  R{r:>2}  {p.name:<25}{tier_str}{adp_str}  vorp {p.vorp:.1f}")
+                print(
+                    f"  {pos:>3}  R{r:>2}  {p.name:<25}{tier_str}{adp_str}  vorp {p.vorp:.1f}"
+                )
 
     # All 12 teams (first 5 rounds)
     print(f"\n{'='*70}")
@@ -90,8 +118,9 @@ def main():
     cv_by_pos = fit_weekly_points_cv(conn)
     print(f"  CV by position: {cv_by_pos}")
     print(f"  Running {args.n_seasons} MC seasons...")
-    eval_result = evaluate_league(result.rosters, cv_by_pos=cv_by_pos, seed=args.seed,
-                                  n_seasons=args.n_seasons)
+    eval_result = evaluate_league(
+        result.rosters, cv_by_pos=cv_by_pos, seed=args.seed, n_seasons=args.n_seasons
+    )
 
     # eval_result is dict[int, float] — draft position -> mean all-play win pct
     if isinstance(eval_result, dict):
@@ -127,9 +156,15 @@ def main():
             print(f"    R{r} (slot {p['franchise_slot']}): {p['name']} ({p['pos']})")
 
     print(f"\nDone. Try different seeds or positions:")
-    print(f"  uv run python scripts/demo_single_draft.py --seed {args.seed + 1} --position {args.position}")
-    print(f"  uv run python scripts/demo_single_draft.py --seed {args.seed} --position 1  (early pick)")
-    print(f"  uv run python scripts/demo_single_draft.py --seed {args.seed} --position 12 (late pick)")
+    print(
+        f"  uv run python scripts/demo_single_draft.py --seed {args.seed + 1} --position {args.position}"
+    )
+    print(
+        f"  uv run python scripts/demo_single_draft.py --seed {args.seed} --position 1  (early pick)"
+    )
+    print(
+        f"  uv run python scripts/demo_single_draft.py --seed {args.seed} --position 12 (late pick)"
+    )
     conn.close()
 
 
