@@ -48,11 +48,24 @@ hand-tuned `DEPLOYED_PARAMS` caps. This is the go/no-go for Phase B (deploy).
   TE      .81   .15   .03                    (single-start craters at TE2)
   K/DEF   .91   .08
 ```
-Table is written to `reports/p_starts-<date>.json`. The estimator is
+**REGENERATE the table — don't load a pre-existing JSON.** Both modes write the
+same `reports/p_starts-<date>.json` path (untracked), and the last 07-20 run was
+`--no-injuries`, so `p_starts-2026-07-20.json` on disk holds the byes-only table,
+NOT the one above. Run `uv run python scripts/estimate_p_starts.py` (default =
+byes + injuries, seed 7 → reproduces the table above exactly). The estimator is
 availability-based (lineups set by projection rank among AVAILABLE players; NOT
 weekly scoring noise — the first cut made that mistake and got ~0.5 for every QB).
 Injury λ (games/season) are ASSUMPTIONS in `estimate_p_starts.INJURY_LAMBDA`
 (QB1.5/RB2.5/WR1.8/TE1.8) — tunable; byes-only understates RB/WR depth.
+Injury-model notes (2026-07-21 review): misses are SCATTERED single weeks
+(Poisson(λ) total, placed uniformly) — no duration or season-ender concept. For
+this per-week statistic that's fine: clustering doesn't change the marginal
+weekly availability, so the table isn't biased by it. Two real gaps roughly
+OFFSET each other: no season-ending tail (Poisson underweights catastrophic
+absences → deep slots slightly understated) and no waiver replacement (a real
+manager fills an IR hole from the wire, not drafted RB6 → deep slots
+overstated). Empirical fix — weekly availability from 2023–25 game logs instead
+of Poisson — is Phase-B polish, NOT a Phase-A blocker.
 
 **Build steps:**
 1. **Prototype PickFn**: a strategy variant where rule-4 score =
@@ -76,7 +89,10 @@ Injury λ (games/season) are ASSUMPTIONS in `estimate_p_starts.INJURY_LAMBDA`
 **Caveats to respect:** backtest is BLIND to RB value (2024 RB/WR/TE projections
 synthetic; QB-timing-only differentiation) — so a P(starts) win/loss will show
 mostly through QB3/TE handling, less through RB depth. The `qb_hoard_12` valuation
-already over-ranks QBs by VORP; P(starts) is exactly the corrective. Keep it LIGHT
+already over-ranks QBs by VORP; P(starts) is the corrective for the DEPTH slots
+(QB3+/TE2+) only — NOT for early-QB ranking, where slot-1/2 multipliers are ~flat
+across positions (QB .83 vs RB/WR .76–.81; see open item 4). A backtest win/loss
+speaks to depth discipline, not to whether Allen/Lamar are ranked right. Keep it LIGHT
 (no full risk/ADR cycle for Phase A — user's standing preference).
 
 ## Other open items (lower priority)
@@ -90,6 +106,16 @@ already over-ranks QBs by VORP; P(starts) is exactly the corrective. Keep it LIG
    OVERRIDE `pick_advisor` on nearly every early pick (raw VORP wanted QBs; real value
    was scarce RB + late QB). Item 4's P(starts) partly fixes this; VONA
    (`ffi.sim.availability`) folded into the score would finish it.
+4. **QB-timing opponent-sensitivity check** (lowest priority; from 2026-07-21
+   review) — P(starts) is structurally flat at QB1/QB2, so the Part 2 backtest
+   can only validate depth handling, never early-QB timing. QB-timing value in
+   2QB is opponent-dependent (panicky room → waiting wins, patient room → early
+   sniping wins), and our evidence spans three different rooms (calibrated sim,
+   FP mock humans, actual league mates). Cheap check: perturb the calibrated
+   opponents' QB aggressiveness up/down, re-run the qb_timing H2H backtest, and
+   confirm QB3-late is robust across the band — anchored on the league's 2025
+   actual draft. If it holds, stop worrying; if it flips, we want to know
+   before Aug 29.
 
 ## Carry-forward facts
 - **Draft: Saturday Aug 29 2026.** Freeze ~Aug 22. Real league `470.l.152123`; test
