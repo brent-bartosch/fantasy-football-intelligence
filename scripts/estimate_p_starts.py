@@ -98,7 +98,16 @@ def main():
     avail = draw_availability(players, args.seasons, args.seed, not args.no_injuries)
     fracs = lineup_starts(avail, pos_idx, proj)
 
-    table = {}
+    mode = "byes-only" if args.no_injuries else "byes+injuries"
+    table = {
+        "_meta": {
+            "mode": mode,
+            "seed": args.seed,
+            "seasons": args.seasons,
+            "scenario": args.scenario,
+            "generated": datetime.date.today().isoformat(),
+        }
+    }
     for gi, (pos, slot) in slot_of.items():
         table.setdefault(pos, {})[slot] = round(float(fracs[gi]), 3)
 
