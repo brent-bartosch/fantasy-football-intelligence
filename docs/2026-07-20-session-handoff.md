@@ -35,9 +35,23 @@ P(starts) estimator) is built, validated, and committed. All on `main`, pushed.
 - **Item 4 Phase A Part 1** (`1dc5a36`): P(starts) estimator + spec
   (`docs/superpowers/specs/2026-07-20-p-starts-valuation-design.md`).
 
-## >>> NEXT TASK: Item 4 Phase A Part 2 (prototype + backtest) <<<
+## Item 4 Phase A Part 2 (prototype + backtest) — DONE 2026-07-21: **NO-GO**
 **Goal:** decide, on actual points, whether `value = VORP × P(starts)` beats the
 hand-tuned `DEPLOYED_PARAMS` caps. This is the go/no-go for Phase B (deploy).
+
+**RESULT (`scripts/backtest_p_starts.py`, commit `8f83869`): NO-GO — caps stay.**
+H2H playoff-make % (100 drafts/season, paired seeds, actual points): DEPLOYED
+**75.3% ±5.0** vs prototype **46.7% ±5.8** — non-overlapping CIs the WRONG way,
+and DEPLOYED wins every individual season (53/84/89 vs 23/50/67). Mechanism (the
+useful part): the naive multiplier disciplines TE fine (TE2 weight .152 → drafted
+only 1 TE) but CANNOT discipline QB — qb_hoard_12's inflated QB VORP (top ~25
+VORP all QBs) overwhelms even the .068 QB4+ weight, and negative-VORP RB/WR bench
+× small weight loses to any positive-VORP QB (sanity draft: 10 QB / 3 RB / 3 WR /
+1 TE). Lesson for any Phase-B revisit: the VORP *scale/baseline* under 2QB
+inflation is the real lever, not a P(starts) multiplier on top of it. Phase B is
+OFF in this form; `caps`/`qb_not_before` remain deployed. Side fix shipped:
+`estimate_p_starts.py` now embeds `_meta {mode,seed,seasons,scenario,generated}`
+in the JSON and the backtest refuses non-byes+injuries tables (footgun closed).
 
 **The P(starts) table (from `estimate_p_starts.py`, byes + injuries), the input:**
 ```
