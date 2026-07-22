@@ -324,10 +324,18 @@ button:hover{border-color:#58a6ff}
 .t1{border-left-color:var(--t1)}.t2{border-left-color:var(--t2)}.t3{border-left-color:var(--t3)}
 .t4{border-left-color:var(--t4)}.t5{border-left-color:var(--t5)}.t6{border-left-color:var(--t6)}
 .hi{background:#243b53}
-#panel{width:290px;flex:none;background:var(--card);border-radius:8px;padding:10px;position:sticky;top:56px}
+#panel{width:320px;flex:none;background:var(--card);border-radius:8px;padding:10px;position:sticky;top:56px;max-height:calc(100vh - 64px);overflow:auto}
 #panel h3{margin:0 0 6px;font-size:13px}
 .status{font-size:12px;color:var(--dim);margin-bottom:8px}
 .status b{color:var(--ink)}
+.rhead{font-size:12px;font-weight:600;margin:12px 0 4px;border-top:1px solid #222;padding-top:8px}
+.rs{display:flex;align-items:center;gap:8px;padding:3px 6px;border-radius:5px;font-size:12.5px;margin-bottom:1px}
+.rs.filled{background:#11161d}
+.rs.empty{opacity:.45}
+.rslot{width:42px;flex:none;color:var(--acc);font-weight:600;font-size:11px;letter-spacing:.02em}
+.rs.bn .rslot{color:var(--dim)}
+.rname{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rrd{color:var(--dim);font-size:11px;font-variant-numeric:tabular-nums}
 .sug{display:flex;align-items:baseline;gap:6px;padding:4px 6px;border-radius:6px;margin-bottom:3px;background:#11161d}
 .sug.rec{outline:1px solid var(--acc)}
 .sug .r{color:var(--dim);width:14px}
@@ -552,7 +560,7 @@ function renderPanel(taken,c,made){
   const status=document.getElementById('status');
   const recrule=document.getElementById('recrule');
   if(!mySlot){status.innerHTML='Pick your draft slot to start.';sugs.innerHTML='';recrule.textContent='';return;}
-  if(made>=RN){status.innerHTML='<b>Roster full</b> (19 picks).';sugs.innerHTML='';recrule.textContent='';renderRoster(c);return;}
+  if(made>=RN){status.innerHTML='<b>Roster full</b> (19 picks).';sugs.innerHTML='';recrule.textContent='';renderRoster();return;}
   const round_=made+1,pla=RN-round_;
   const currentOverall=taken.size+1;
   const mo=mineOveralls();const nextPick=mo[made];       // my upcoming pick overall
@@ -580,11 +588,49 @@ function renderPanel(taken,c,made){
       ' <span class=p>'+s.recommended.pos+' · FORCE ('+s.recommended.rule+')</span></span></div>'+h;
   }
   sugs.innerHTML=h;
-  renderRoster(c);
+  renderRoster();
 }
-function renderRoster(c){
-  const parts=[];for(const p of POS)if(c[p])parts.push(p+':'+c[p]);
-  document.getElementById('myroster').textContent='My roster — '+(parts.join('  ')||'(empty)');
+// League slot grid (from the baked roster shape): QB/QB/RB/RB/WR/WR/WR/TE/FLEX/
+// K/DEF + bench. Filled by projection (starters first, best leftover RB/WR/TE ->
+// FLEX, rest -> bench). Recomputed from state -- no new state.
+const SLOT_SPEC=[['QB',ST.QB],['RB',ST.RB],['WR',ST.WR],['TE',ST.TE],['FLEX',1],['K',ST.K],['DEF',ST.DEF]];
+const FLEX_ELIG=['RB','WR','TE'];
+function assignRoster(){
+  const mine=[];let r=0;                       // my picks in draft order; round = pick #
+  for(const id of order)if(marks[id]==='mine'){r++;const p=byId[id];if(p)mine.push({...p,round:r});}
+  const byPos={};for(const m of mine)(byPos[m.pos]=byPos[m.pos]||[]).push(m);
+  for(const k in byPos)byPos[k].sort((a,b)=>b.proj-a.proj);
+  const used=new Set(),slots=[];
+  for(const [pos,n] of SLOT_SPEC){
+    if(pos==='FLEX'){
+      let best=null;
+      for(const fp of FLEX_ELIG)for(const m of (byPos[fp]||[]))
+        if(!used.has(m.id)&&(!best||m.proj>best.proj))best=m;
+      if(best)used.add(best.id);
+      slots.push({slot:'FLEX',player:best});continue;
+    }
+    for(let i=0;i<n;i++){
+      const pick=(byPos[pos]||[]).find(m=>!used.has(m.id))||null;
+      if(pick)used.add(pick.id);
+      slots.push({slot:pos,player:pick});
+    }
+  }
+  const bench=mine.filter(m=>!used.has(m.id));  // remaining, draft order
+  const nb=RN-slots.length;                     // fixed count (RN=19 - 11 starters = 8)
+  for(let i=0;i<nb;i++)slots.push({slot:'BN',player:bench[i]||null});
+  return slots;
+}
+function renderRoster(){
+  let h='<div class=rhead>My roster</div>';
+  for(const a of assignRoster()){
+    const bn=a.slot==='BN'?' bn':'';
+    if(a.player)
+      h+='<div class="rs filled'+bn+'"><span class=rslot>'+a.slot+'</span>'+
+         '<span class=rname>'+a.player.n+'</span><span class=rrd>R'+a.player.round+'</span></div>';
+    else
+      h+='<div class="rs empty'+bn+'"><span class=rslot>'+a.slot+'</span><span class=rname>—</span></div>';
+  }
+  document.getElementById('myroster').innerHTML=h;
 }
 
 function exportJSON(){
