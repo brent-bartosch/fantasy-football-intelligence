@@ -91,6 +91,29 @@ second opinion (advisory only).
   synthetic in 2024 (and likely 2021–22), so wins are evidence about QB/TE/
   flex discipline, not RB-depth valuation.
 
+## Iteration 2 pre-registration (2026-07-21, before the confirmation run)
+
+Round-1 tournament (commit `9f2f40d`): composite NO-GO (DEPLOYED 79.4 ±3.6,
+A′ 78.8 ±3.7, B 76.2 ±3.8 over 5 seasons) but a clean split by projection
+quality: A′ beats DEPLOYED on every real-RB/WR/TE season (2022 91v85, 2023
+72v53, 2025 88v89≈tie; avg 83.7 v 75.7) and loses only on synthetic seasons
+(2021, 2024). **Pre-registered hypothesis:** synthetic seasons are BIASED
+against gap-based engines (they graft the 2026 points curve onto old ECR
+order — fake cross-position gaps are the engine's direct input; caps are
+ordinal and insensitive). **Falsification test (causal, not correlational):**
+re-run 2023 (fully real) with projections REPLACED by the synthetic curve —
+same season, same actuals, only projection realism varies. If A′'s 2023 edge
+evaporates under synthetic projections while DEPLOYED holds, the mechanism is
+confirmed and the defensible primary metric is REAL-projection seasons
+(2022/2023/2025); the mixed composite mixes a biased instrument into the
+average. If the edge survives the ablation, the hypothesis is WRONG and the
+composite verdict (NO-GO) stands. Confirmation run on FRESH seeds, 300
+drafts/season, reporting marginal CIs and paired-difference CIs. Deploy bar
+unchanged: non-overlapping marginal CIs on the (defensible) primary + D7.
+Honest scope note: qb_by_round timing force was re-added to all arms (emergent
+QB timing provably loses to a QB run); what v2 actually replaces is the
+VALUATION (starts-based replacement + P_start weights), not QB timing.
+
 ## Known caveats
 
 - 2021–22 will likely be fully degraded at RB/WR/TE (synthetic curve on real
