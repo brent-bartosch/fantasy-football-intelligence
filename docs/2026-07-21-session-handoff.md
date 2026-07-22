@@ -69,19 +69,18 @@ reproduction. All local; **NOT pushed** (user was away; push when they say so).
   mild cross-position scale wobble in 2021 numbers.
 
 ## Open items (priority order)
-1. **Push to origin** — 7 local commits (`4b59aa5..9b3fd19`), user say-so.
+1. ~~Push to origin~~ **DONE 2026-07-21** (`ec46ddf..aaf362a` pushed on user
+   direction).
 2. **Sim farm restart** (dark since 07-12) — now must ALSO pick up the new
    valuation; point at DEPLOYED_PARAMS + playoff-make %, then `launchctl load`.
-3. **D7 reference re-establish decision:** gate reference still 0.52969 while
-   the composite now sits at 0.5652 — the gate is loose against future
-   regressions from the NEW level. Recommend re-running `--reference` to reset
-   the baseline (policy decision; flag to user).
-4. **Trade-market lead (from the user's OTHER session, untracked files
-   `docs/research/2026-07-21-qb-monopoly-trade-out.md` +
-   `scripts/backtest_qb_monopoly_trades.py`, do not stage):** QB monopoly =
-   refuted, but its CONTROL arm shows DEPLOYED+trades 83.7-88.7% vs 75.3 —
-   post-draft trading may be worth more than any valuation tweak today.
-   Deserves its own review before adopting numbers.
+3. ~~D7 reference re-establish~~ **DONE 2026-07-21** (user direction):
+   `--reference` stored composite **0.5652 band 0.0290**; gate re-verified
+   PASSED against the new threshold 0.5361. Prior row (0.52969) deactivated,
+   not deleted.
+4. ~~Trade-market lead~~ **CLOSED 2026-07-21:** user directed ignore + delete;
+   the qb-monopoly files (other session's untracked experiment) were deleted
+   without review. If post-draft trading ever resurfaces as a question, treat
+   it as fresh work — no adopted numbers from that exercise.
 5. **B's TE3 disagreement** — marginal model says a 3rd TE behind an elite TE1
    is worth ~0.4-1.7 pts over a 9th WR's 0.0. Cheap test someday; A′/TE≤2 is
    what's deployed and it won.
