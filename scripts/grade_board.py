@@ -9,8 +9,13 @@ Answers two questions:
      divergences = where our-scoring edge was left on the board.
 
 The board is a 19-row x 12-col transcription of an FP mock (col = team, in
-round-1 pick order). Swap BOARD/TEAMS for a different draft.
+round-1 pick order). Swap BOARD/TEAMS for a different draft, or pass
+`--from-json <export>` to grade a draft_console.py export (its native format is
+an ordered pick list with mine/other flags; `load_console_export` reconstructs
+the 12-column snake grid this grader expects).
 """
+import argparse
+import json
 from collections import defaultdict
 
 from ffi.db import connect
@@ -321,6 +326,31 @@ def overall(round_1indexed: int, col_1indexed: int) -> int:
     return (r - 1) * 12 + (c if r % 2 == 1 else 13 - c)
 
 
+def load_console_export(path: str):
+    """Reconstruct (BOARD, TEAMS) from a draft_console.py export
+    ({my_slot, teams, rounds, picks:[{overall, name, mine}]}). Each pick's
+    overall maps to (round, col) via the same snake order this grader uses, so
+    the ordered pick stream becomes the 12-column grid. Empty cells (short/
+    partial drafts) are '' and skipped in main. The exporting seat gets a
+    '(US)' team name so the ranking star lands on you."""
+    d = json.loads(
+        open(path).read_text() if hasattr(path, "read_text") else open(path).read()
+    )
+    n_teams, n_rounds, my_slot = d.get("teams", 12), d.get("rounds", 19), d["my_slot"]
+    grid = [["" for _ in range(n_teams)] for _ in range(n_rounds)]
+    for pk in d["picks"]:
+        ov = pk["overall"]
+        r = (ov - 1) // n_teams + 1
+        idx = (ov - 1) % n_teams
+        col = idx + 1 if r % 2 == 1 else n_teams - idx
+        if 1 <= r <= n_rounds:
+            grid[r - 1][col - 1] = pk["name"]
+    teams = [f"Team {i}" for i in range(1, n_teams + 1)]
+    if 1 <= my_slot <= n_teams:
+        teams[my_slot - 1] = f"Team {my_slot}(US)"
+    return grid, teams
+
+
 def load_valuation(conn):
     cur = conn.cursor()
     cur.execute(
@@ -397,15 +427,20 @@ def spearman(xs, ys):
     return cov / (vx * vy) if vx and vy else 0.0
 
 
-def main():
+def main(board=None, teams=None):
+    board = board if board is not None else BOARD
+    teams = teams if teams is not None else TEAMS
+    n_teams = len(teams)
     conn = connect()
     all_rows, by_name = load_valuation(conn)
 
     team_players = defaultdict(list)
     drafted = []
     unmatched = []
-    for r_idx, row in enumerate(BOARD, start=1):
+    for r_idx, row in enumerate(board, start=1):
         for c_idx, label in enumerate(row, start=1):
+            if not label:
+                continue  # empty cell (partial/short draft export)
             m = match(label, by_name, all_rows)
             ov = overall(r_idx, c_idx)
             if m is None:
@@ -417,7 +452,8 @@ def main():
 
     print("=== TEAM RANKING — optimal starters, season proj pts (our scoring) ===")
     scored = sorted(
-        ((optimal(team_players[c]), TEAMS[c - 1]) for c in range(1, 13)), reverse=True
+        ((optimal(team_players[c]), teams[c - 1]) for c in range(1, n_teams + 1)),
+        reverse=True,
     )
     for rank, (tot, name) in enumerate(scored, 1):
         star = "  <== YOU" if name.endswith("(US)") else ""
@@ -434,4 +470,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--from-json",
+        help="grade a draft_console.py export instead of the hardcoded BOARD",
+    )
+    args = ap.parse_args()
+    if args.from_json:
+        b, t = load_console_export(args.from_json)
+        main(board=b, teams=t)
+    else:
+        main()
