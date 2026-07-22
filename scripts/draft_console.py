@@ -319,7 +319,8 @@ button:hover{border-color:#58a6ff}
 .nm{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .num{color:var(--dim);font-size:11px;font-variant-numeric:tabular-nums}
 .adp{width:32px;text-align:right}
-.mp{width:20px;text-align:center;color:var(--acc);font-weight:700;cursor:pointer}
+.mp{flex:none;width:26px;padding:1px 0;text-align:center;color:var(--acc);font-weight:700;cursor:pointer;border:1px solid #30363d;border-radius:5px;background:#11161d;font-size:13px}
+.mp:hover{border-color:var(--acc);background:#182231}
 .t1{border-left-color:var(--t1)}.t2{border-left-color:var(--t2)}.t3{border-left-color:var(--t3)}
 .t4{border-left-color:var(--t4)}.t5{border-left-color:var(--t5)}.t6{border-left-color:var(--t6)}
 .hi{background:#243b53}
@@ -482,23 +483,35 @@ function selfTest(){
 }
 
 // ---- live state ----
-let mySlot=parseInt(localStorage.getItem('dc_slot')||'0')||0;
-let actions=[];                 // [{id,mine}] in overall click order
+// marks: id -> 'gone'|'mine'. order: the sequence marks were made (export order
+// + undo LIFO). Persisted under a key VERSIONED BY THE BUILD git SHA, so a
+// rebuilt console can never load stale, structurally-incompatible state.
+const SKEY='dc:'+META.git_sha;
+let mySlot=0,marks={},order=[];
+(function(){try{const s=JSON.parse(localStorage.getItem(SKEY)||'null');
+  if(s){mySlot=s.slot||0;marks=s.marks||{};order=Array.isArray(s.order)?s.order:[];}}catch(e){}})();
 const byId={}; for(const pos of ORDER)for(const p of POOL[pos])byId[p.id]=p;
+function persist(){localStorage.setItem(SKEY,JSON.stringify({slot:mySlot,marks,order}));}
 
 function seatOf(overall){const r=Math.floor((overall-1)/TEAMSN)+1,i=(overall-1)%TEAMSN;return r%2===1?i+1:TEAMSN-i;}
 function mineOveralls(){const a=[];for(let o=1;o<=RN*TEAMSN;o++)if(seatOf(o)===mySlot)a.push(o);return a;}
 function state(){
-  const taken=new Set(),c={};let made=0;
-  for(const a of actions){taken.add(a.id);if(a.mine){const p=byId[a.id];if(p){c[p.pos]=(c[p.pos]||0)+1;made++;}}}
+  const taken=new Set(order),c={};let made=0;
+  for(const id of order)if(marks[id]==='mine'){const p=byId[id];if(p){c[p.pos]=(c[p.pos]||0)+1;made++;}}
   return {taken,c,made};
 }
-function draftOther(id){actions.push({id,mine:false});persist();render();}
-function draftMine(id){actions.push({id,mine:true});persist();render();}
-function undo(){if(actions.length){actions.pop();persist();render();}}
-function resetAll(){if(confirm('Reset the whole board?')){actions=[];persist();render();}}
-function persist(){localStorage.setItem('dc_actions',JSON.stringify(actions));localStorage.setItem('dc_slot',String(mySlot));}
-
+// whole-row click: cross off (toggle). ALWAYS works -- no turn gating, so a
+// manager who joins mid-draft marks everyone already gone in seconds. The
+// current overall pick is INFERRED from order.length, never blocked on.
+function toggleGone(id){
+  if(marks[id]){delete marks[id];const i=order.indexOf(id);if(i>=0)order.splice(i,1);}
+  else{marks[id]='gone';order.push(id);}
+  persist();render();
+}
+// separate ＋ button (stopPropagation'd, right edge): MY pick -> advances counts.
+function draftMine(id){if(!marks[id])order.push(id);marks[id]='mine';persist();render();}
+function undo(){const id=order.pop();if(id!==undefined){delete marks[id];persist();render();}}
+function resetAll(){if(confirm('Reset the whole board? Clears all marks.')){marks={};order=[];persist();render();}}
 function setSlot(v){mySlot=parseInt(v)||0;persist();render();}
 function renderSetup(){
   let opts='<option value=0>slot…</option>';
@@ -513,20 +526,19 @@ function render(){
   for(const pos of ORDER){
     const col=document.createElement('div');col.className='col';
     let h='<h2>'+pos+' <span class=cnt>('+ST[pos]+' start)</span></h2><div class=list>';
-    let rk=0;const dep=META.display_depth[pos]||30;let shown=0;
+    let rk=0;const dep=META.display_depth[pos]||30;let availShown=0;
     for(const p of POOL[pos]){
-      if(shown>=dep&&taken.has(p.id))continue;
-      const isTaken=taken.has(p.id);const isMine=actions.some(a=>a.mine&&a.id===p.id);
-      if(!isTaken){rk++;shown++;} else shown++;
-      if(shown>dep&&isTaken)continue;
+      const status=marks[p.id];const isAvail=!status;   // undefined | 'gone' | 'mine'
+      if(isAvail){if(availShown>=dep)break;availShown++;rk++;}  // taken rows still render (toggleable)
       const adp=p.adp==null?'—':p.adp;
-      const cls='row t'+p.t+(isTaken?(isMine?' mine':' d'):'');
-      h+='<div class="'+cls+'" data-n="'+p.n.toLowerCase()+'">'+
-         '<span class=mp title="MY pick" onclick="draftMine(\''+p.id+'\');event.stopPropagation()">＋</span>'+
-         '<span class=rk>'+(isTaken?'·':rk)+'</span>'+
-         '<span class=nm onclick="draftOther(\''+p.id+'\')">'+p.n+'</span>'+
+      const cls='row t'+p.t+(status==='mine'?' mine':status==='gone'?' d':'');
+      h+='<div class="'+cls+'" data-n="'+p.n.toLowerCase()+'" onclick="toggleGone(\''+p.id+'\')" title="click = cross off (toggle)">'+
+         '<span class=rk>'+(isAvail?rk:'·')+'</span>'+
+         '<span class=nm>'+p.n+'</span>'+
          '<span class="num">'+Math.round(p.proj)+'</span>'+
-         '<span class="num adp">'+adp+'</span></div>';
+         '<span class="num adp">'+adp+'</span>'+
+         '<button class=mp title="MY pick (adds to your roster)" onclick="draftMine(\''+p.id+'\');event.stopPropagation()">＋</button>'+
+         '</div>';
     }
     col.innerHTML=h+'</div>';cols.appendChild(col);
   }
@@ -576,7 +588,7 @@ function renderRoster(c){
 }
 
 function exportJSON(){
-  const picks=actions.map((a,i)=>({overall:i+1,name:byId[a.id]?byId[a.id].n:a.id,ref:a.id,mine:a.mine}));
+  const picks=order.map((id,i)=>({overall:i+1,name:byId[id]?byId[id].n:id,ref:id,mine:marks[id]==='mine'}));
   const out={format:'draft_console_v1',my_slot:mySlot,teams:TEAMSN,rounds:RN,picks,
     provenance:{date:META.date,git_sha:META.git_sha,valuation_snapshot_id:META.valuation_snapshot_id,
       pstart_meta:META.pstart_meta,deployed_qb_by_round:QBR,defk_round:DEFK}};
@@ -590,19 +602,17 @@ const q=document.getElementById('q');
 q.addEventListener('input',()=>{const v=q.value.trim().toLowerCase();
   document.querySelectorAll('.row').forEach(r=>r.classList.toggle('hi',v&&r.dataset.n.includes(v)));});
 q.addEventListener('keydown',e=>{if(e.key!=='Enter')return;const v=q.value.trim().toLowerCase();if(!v)return;
-  const {taken}=state();
   for(const pos of ORDER)for(const p of POOL[pos])
-    if(!taken.has(p.id)&&p.n.toLowerCase().includes(v)){draftOther(p.id);q.value='';document.querySelectorAll('.row').forEach(r=>r.classList.remove('hi'));return;}});
+    if(!marks[p.id]&&p.n.toLowerCase().includes(v)){toggleGone(p.id);q.value='';document.querySelectorAll('.row').forEach(r=>r.classList.remove('hi'));return;}});
 
 // provenance footer
 document.getElementById('prov').innerHTML=
   'valuation snapshot #'+META.valuation_snapshot_id+' · p_starts '+META.pstart_meta.mode+' seed '+META.pstart_meta.seed+
   '<br>DEPLOYED qb_by_round '+JSON.stringify(QBR)+' · defk R'+DEFK+' · TE cap '+CAPS.TE+
   '<br>git '+META.git_sha+' · golden slot '+META.golden_slot+
-  '<br><kbd>click name</kbd> drafted-by-other · <kbd>＋</kbd> my pick';
+  '<br><kbd>click row</kbd> = crossed off (toggle) · <kbd>＋</kbd> = my pick';
 
-// init
-const saved=localStorage.getItem('dc_actions');if(saved)actions=JSON.parse(saved);
+// init (state already loaded from the SHA-versioned key above)
 renderSetup();selfTest();render();
 </script></body></html>"""
 
