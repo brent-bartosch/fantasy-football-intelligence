@@ -2,7 +2,7 @@
 """Backtest archive sourcing attempt (R11 — Task 10).
 
 Attempts, in a fixed order, to source preseason ADP/ECR and preseason season
-projections for the 2023/2024/2025 seasons from the open web, and stores
+projections for the 2021-2025 backtest seasons from the open web, and stores
 whatever succeeds in raw.backtest_sources ((source, season, kind) upsert,
 idempotent re-run). Kind is 'adp'|'projections'|'ecr'.
 
@@ -52,7 +52,7 @@ DYNASTYPROCESS_FP_PAGE = "/nfl/rankings/ppr-superflex-cheatsheets.php"
 FP_PROJECTIONS_URL = "https://www.fantasypros.com/nfl/projections/{pos}.php?week=draft"
 PROJECTION_POSITIONS = ["qb", "rb", "wr", "te", "k"]
 
-SEASONS = [2023, 2024, 2025]
+SEASONS = [2021, 2022, 2023, 2024, 2025]
 MIN_ADP_ROWS = 150
 MIN_PROJ_ROWS = 250
 

@@ -1,7 +1,7 @@
-"""2023-25 backtest harness + ADR D7 regression gate (Phase 3 / Task 11).
+"""2021-25 backtest harness + ADR D7 regression gate (Phase 3 / Task 11).
 
 Turns the simulator stack (Tasks 4-9) into the non-circular validator: draft
-each of 2023/2024/2025 with THAT year's archived preseason board, score the
+each backtest season with THAT year's archived preseason board, score the
 resulting rosters with ACTUAL nflverse weekly league points (not another
 projection), and reduce the twelve (4 strategy x 3 season) reference cells to
 one composite all-play% -- the number every later strategy/valuation change
@@ -120,10 +120,22 @@ doc, docs/research/2026-07-10-backtest-archive-sourcing.md):
     projection, and thin per-season samples would make single-season CVs
     noisier, not more honest.
 
-Reference cells (ADR D7 gate): `REF_STRATEGIES` (4) x `BACKTEST_SEASONS` (3)
-x 100 seeded drafts each = 12 cells / 1200 drafts. Composite = mean of the
-12 cells' own (100-draft) mean all-play%; band = 2 x SE across the 12 CELL
-MEANS (not the pooled 1200 draws) -- `composite_and_band`.
+Reference cells (ADR D7 gate): `REF_STRATEGIES` (4) x `GATE_SEASONS` (3, the
+frozen 2023-25 baseline -- NOT the extended `BACKTEST_SEASONS`) x 100 seeded
+drafts each = 12 cells / 1200 drafts. Composite = mean of the 12 cells' own
+(100-draft) mean all-play%; band = 2 x SE across the 12 CELL MEANS (not the
+pooled 1200 draws) -- `composite_and_band`.
+
+BACKTEST EXTENSION (2026-07-21, starts-weighted valuation v2 spec): the
+harness now builds pools for FIVE seasons -- 2021, 2022, 2023, 2024, 2025 --
+so the strategy tournament can score over a 5-season composite. 2021/2022
+preseason superflex ECR comes from the same dynastyprocess `db_fpecr.parquet`
+archive (August snapshot nearest the draft window); FantasyPros preseason
+projection stat lines are NOT available that far back (Wayback MISS, expected
+and probed), so 2021/2022 run the DESIGNED synthetic-curve fallback (point 3)
+on real ECR order at every REAL_POS -- `degraded=True` on every RB/WR/TE row,
+and QB too unless a real QB projection snapshot was recovered. The D7 gate
+stays on GATE_SEASONS; 2021/2022 never enter it.
 """
 from __future__ import annotations
 
@@ -150,7 +162,17 @@ from ffi.valuation.tiers import gmm_tiers
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 OVERRIDES_PATH = REPO_ROOT / "data" / "backtest_name_overrides.json"
 
-BACKTEST_SEASONS = (2023, 2024, 2025)
+BACKTEST_SEASONS = (2021, 2022, 2023, 2024, 2025)
+
+# The ADR D7 regression gate is a FROZEN baseline: it is defined over the
+# original three reference seasons ONLY (2023-25), never the extended set.
+# `run_all_cells` (the shared computation behind `run_backtests.py`'s
+# --reference/--gate) iterates GATE_SEASONS, so extending BACKTEST_SEASONS to
+# 2021-2025 for the 5-season tournament does NOT move the gate. Do not fold
+# 2021/2022 into this tuple -- those seasons are fully synthetic at RB/WR/TE
+# (degraded curves on real ECR order) and were never part of the reference
+# the deploy decision is gated against.
+GATE_SEASONS = (2023, 2024, 2025)
 
 # Positions ever eligible for real archive stat-line scoring. K and DEF are
 # deliberately excluded -- see module docstring points 4-5.
@@ -714,11 +736,13 @@ def run_cell(
 
 
 def run_all_cells(conn) -> list:
-    """Run all 12 (strategy, season) reference cells -- the shared
-    computation behind both `--reference` and `--gate`."""
+    """Run the 12 (strategy, season) reference cells -- the shared computation
+    behind both `--reference` and `--gate`. Iterates GATE_SEASONS (2023-25),
+    NOT BACKTEST_SEASONS: the D7 gate is a frozen 3-season baseline and must
+    not shift when the tournament seasons (2021-2025) grow. See GATE_SEASONS."""
     priors = build_slot_priors(conn)
     results = []
-    for season in BACKTEST_SEASONS:
+    for season in GATE_SEASONS:
         pool = load_backtest_pool(conn, season)
         lookup = load_points_lookup(conn, season)
         for idx, strat in enumerate(REF_STRATEGIES):
