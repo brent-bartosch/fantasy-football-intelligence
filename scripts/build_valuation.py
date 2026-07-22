@@ -17,6 +17,7 @@ from ffi.db import connect
 from ffi.ingest.fantasypros import latest_fp_payload
 from ffi.scoring.config import load_config_v1
 from ffi.valuation.baseline import compute_baselines, compute_replacement_ranks
+from ffi.valuation.starts import load_starts_table, starts_replacement_ranks
 from ffi.valuation.tiers import gmm_tiers
 
 SCENARIOS = {
@@ -27,6 +28,18 @@ SCENARIOS = {
 
 conn = connect()
 cfg = load_config_v1()
+
+# Starts-based replacement (design 2026-07-21): QB/RB/WR/TE replacement rank =
+# round(12 x sum P_start[pos][slot]) -> QB24/RB36/WR36/TE12, from the canonical
+# byes+injuries table. Replaces the roster-based (scenario-dependent) QB rank;
+# K/DEF keep the roster-based rank (defk_round owns their timing). vorp = proj -
+# points_at_rank(pos, starts_rank) is exactly A''s (proj - baseline) term.
+STARTS_TABLE = load_starts_table()
+STARTS_RANKS = starts_replacement_ranks(STARTS_TABLE)
+print(
+    f"starts-based replacement ranks (QB/RB/WR/TE): {STARTS_RANKS} "
+    f"(table {STARTS_TABLE['_meta']})"
+)
 
 # latest sleeper season snapshot's scored points, joined to crosswalk + position
 with conn.cursor() as cur:
@@ -98,6 +111,7 @@ with conn.cursor() as cur:
         )
 
         ranks = compute_replacement_ranks(scen)
+        ranks.update(STARTS_RANKS)  # override QB/RB/WR/TE with starts-based ranks
         missing = {p for p in ranks if p not in by_pos}
         if missing:
             print(
@@ -123,7 +137,16 @@ with conn.cursor() as cur:
                     pos,
                     ranks[pos],
                     base,
-                    json.dumps({**scen, "snapshot_id": snapshot_id}),
+                    json.dumps(
+                        {
+                            **scen,
+                            "snapshot_id": snapshot_id,
+                            "replacement": "starts_based"
+                            if pos in STARTS_RANKS
+                            else "roster_based",
+                            "pstart_meta": STARTS_TABLE["_meta"],
+                        }
+                    ),
                 ),
             )
         for pos in ranks:
@@ -150,7 +173,16 @@ with conn.cursor() as cur:
                         tier,
                         (pts - baselines[pos]) - (std or 0) * 1.0 if std else None,
                         (pts - baselines[pos]) + (std or 0) * 1.0 if std else None,
-                        json.dumps({"snapshot_id": snapshot_id, "ecr_std_scale": 1.0}),
+                        json.dumps(
+                            {
+                                "snapshot_id": snapshot_id,
+                                "ecr_std_scale": 1.0,
+                                "replacement": "starts_based"
+                                if pos in STARTS_RANKS
+                                else "roster_based",
+                                "pstart_meta": STARTS_TABLE["_meta"],
+                            }
+                        ),
                     ),
                 )
 conn.commit()

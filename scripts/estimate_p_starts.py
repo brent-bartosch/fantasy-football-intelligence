@@ -78,6 +78,12 @@ def main():
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--scenario", default="qb_hoard_12")
     ap.add_argument("--no-injuries", action="store_true")
+    ap.add_argument(
+        "--out",
+        default=None,
+        help="output path (default: reports/p_starts-<today>.json). Pass "
+        "data/p_starts.json to write the tracked canonical table live code reads.",
+    )
     args = ap.parse_args()
 
     conn = connect()
@@ -118,7 +124,7 @@ def main():
         row = "".join(f"{table[pos].get(s, ''):>7}" for s in range(1, 9))
         print(f"  {pos:<5}{row}")
 
-    path = f"reports/p_starts-{datetime.date.today().isoformat()}.json"
+    path = args.out or f"reports/p_starts-{datetime.date.today().isoformat()}.json"
     with open(path, "w") as f:
         json.dump(table, f, indent=1)
     print(f"\nwrote {path}")

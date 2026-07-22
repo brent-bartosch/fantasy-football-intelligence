@@ -97,6 +97,7 @@ from ffi.sim.draft import PickFn
 from ffi.sim.opponent import CAND_WINDOW, STARTERS, feasible, required_picks
 from ffi.sim.pool import PoolPlayer
 from ffi.sim.priors import POSITIONS
+from ffi.valuation.starts import load_starts_table, pstart_weight_tuples
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,16 @@ class StrategyParams:
     tier_break_bonus: float = 0.0  # score bump for closing out a tier
     qb_not_before: tuple = (1, 1, 1)  # QB #n not draftable (rule 4) before this round
     qb_tier_targets: tuple = ()  # QB #n (rule 4 only) capped at tier <= this[n]
+    # Deployed A' engine (design 2026-07-21): when set, rule-4 (and the
+    # feasibility force) score = P_start[pos][k+1] x vorp instead of vorp +
+    # tier bonus, where vorp already carries the starts-based replacement
+    # baseline (build_valuation / build_season_pool). Format is a hashable
+    # ((pos, (w1, w2, ...)), ...); () = legacy vorp scoring (REF_STRATEGIES).
+    # A candidate whose slot weight is 0 (past the P(starts) table depth) is
+    # never voluntarily drafted, and DEF/K are excluded from rule 4 entirely
+    # (they arrive only via the defk_round force) -- both mirror the standalone
+    # A' prototype exactly so the live path reproduces its tournament result.
+    pstart_weights: tuple = ()
 
 
 # The live-deployed roster-construction strategy (2026-07-15 backtest finding,
@@ -122,11 +133,37 @@ class StrategyParams:
 # -- imports THIS constant, so a demo/nightly view can never silently drift from
 # what the assistant ships. Changing the deployed strategy = editing this one
 # object (and re-running the ADR D7 gate, since it is a live-strategy change).
+# DEPLOYED = the A' starts-weighted engine (design 2026-07-21, Phase B). Beats
+# the old caps-only strategy on the pre-registered real-projection primary
+# (2022/23/25: A' 85.3% vs caps 76.8%, paired +8.6% [+5.2,+11.9]; see
+# reports/tournament-v2-confirmation-2026-07-21.json). rule-4 score =
+# P_start[pos][k+1] x vorp (vorp is starts-based: QB24/RB36/WR36/TE12). QB timing
+# kept as a force (qb_by_round=(2,5,14) -- emergent QB provably loses to a QB
+# run); TE<=2 insurance cap kept; the generic RB/WR caps and qb_not_before delay
+# are RETIRED (non-binding here -- RB/WR depth is capped emergently by the
+# never-start weight-0 skip, QB by len(qb_by_round)). The fields remain
+# functional for other strategies (REF_STRATEGIES / the sim farm grid).
+_STARTS_TABLE = load_starts_table()
 DEPLOYED_PARAMS = StrategyParams(
     qb_by_round=(2, 5, 14),
-    qb_not_before=(1, 1, 10),
+    qb_not_before=(1, 1, 1),  # retired (no rule-4 QB delay under A')
     caps=(("QB", 4), ("RB", 9), ("WR", 9), ("TE", 2), ("K", 1), ("DEF", 1)),
+    pstart_weights=pstart_weight_tuples(_STARTS_TABLE),
 )
+
+
+def _pstart_map(pstart_weights: tuple) -> dict | None:
+    """`pstart_weights` tuple -> {pos: (w1, w2, ...)}, or None when empty
+    (legacy vorp scoring)."""
+    return {pos: ws for pos, ws in pstart_weights} if pstart_weights else None
+
+
+def _pstart_weight(weights_map: dict, pos: str, slot: int) -> float:
+    """P_start for the `slot`-th (1-indexed) player at `pos`; 0.0 past depth."""
+    row = weights_map.get(pos)
+    if not row:
+        return 0.0
+    return row[slot - 1] if 1 <= slot <= len(row) else 0.0
 
 
 def _unmet_positions(counts: dict) -> list[str]:
@@ -204,8 +241,12 @@ def rule4_candidates(
     the actual pick."""
     caps = dict(params.caps)
     qb_n = counts.get("QB", 0)
+    weights_map = _pstart_map(params.pstart_weights)  # None => legacy vorp mode
     scored = []
     for pos in POSITIONS:
+        # A' mode: DEF/K never voluntary (only via the defk_round force).
+        if weights_map is not None and pos in ("DEF", "K"):
+            continue
         if pos == "QB" and counts.get("QB", 0) >= len(params.qb_by_round):
             continue
         if (
@@ -233,8 +274,17 @@ def rule4_candidates(
             filtered = [c for c in cands if c.tier <= max_tier]
             if not filtered:
                 continue
-        for c in filtered[:CAND_WINDOW]:
-            scored.append((_score(c, cands, params.tier_break_bonus), c))
+        if weights_map is not None:
+            # A': score = P_start[pos][k+1] x vorp; never-start depth (weight 0)
+            # is not voluntarily drafted.
+            w = _pstart_weight(weights_map, pos, counts.get(pos, 0) + 1)
+            if w <= 0.0:
+                continue
+            for c in filtered[:CAND_WINDOW]:
+                scored.append((w * c.vorp, c))
+        else:
+            for c in filtered[:CAND_WINDOW]:
+                scored.append((_score(c, cands, params.tier_break_bonus), c))
     return scored
 
 
@@ -255,16 +305,24 @@ def evaluate_rules(
     assistant's #1 answer is always, by construction, this function's
     result, never a second implementation."""
     caps = dict(params.caps)
+    weights_map = _pstart_map(params.pstart_weights)  # None => legacy vorp mode
 
-    # 1. Feasibility force.
+    # 1. Feasibility force. In A' mode the unmet-slot candidates are scored by
+    # the same P_start[pos][k+1] x vorp rule as rule 4 (slot-1/2 weights are
+    # always > 0, so no candidate is dropped here).
     if required_picks(counts) == picks_left_after:
         scored = []
         for pos in _unmet_positions(counts):
             cands = avail_by_pos.get(pos) or []
             if not cands:
                 continue
-            for c in cands[:CAND_WINDOW]:
-                scored.append((_score(c, cands, params.tier_break_bonus), c))
+            if weights_map is not None:
+                w = _pstart_weight(weights_map, pos, counts.get(pos, 0) + 1)
+                for c in cands[:CAND_WINDOW]:
+                    scored.append((w * c.vorp, c))
+            else:
+                for c in cands[:CAND_WINDOW]:
+                    scored.append((_score(c, cands, params.tier_break_bonus), c))
         if scored:
             return _pick_best(scored), "feasibility"
         # No available candidate at any unmet position -- an unexpected

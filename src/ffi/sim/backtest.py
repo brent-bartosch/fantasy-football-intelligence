@@ -157,6 +157,7 @@ from ffi.sim.priors import SlotPriors, build_slot_priors
 from ffi.sim.season import evaluate_league
 from ffi.sim.strategy import StrategyParams, make_strategy_fn
 from ffi.valuation.baseline import compute_baselines, compute_replacement_ranks
+from ffi.valuation.starts import load_starts_table, starts_replacement_ranks
 from ffi.valuation.tiers import gmm_tiers
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -515,7 +516,12 @@ def build_season_pool(
         pos: sorted((r["proj_points"] for r in rows), reverse=True)
         for pos, rows in rows_by_pos.items()
     }
+    # Starts-based replacement (design 2026-07-21, Phase B): QB/RB/WR/TE
+    # replacement rank = round(12 x sum P_start) (QB24/RB36/WR36/TE12), matching
+    # the deployed live valuation so `vorp = proj - starts_baseline` is exactly
+    # A''s (proj - baseline) term and the LIVE strategy reproduces on these pools.
     ranks = compute_replacement_ranks(VORP_SCENARIO)
+    ranks.update(starts_replacement_ranks(load_starts_table()))
     ranks = {p: r for p, r in ranks.items() if p in points_by_pos}
     baselines = compute_baselines(points_by_pos, ranks)
 
