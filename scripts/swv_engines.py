@@ -312,32 +312,39 @@ def expected_lineup(
 ) -> float:
     """Mean over (season, week) of the optimal weekly lineup total: top
     STARTERS-many AVAILABLE players by proj per position + one FLEX
-    (best leftover available RB/WR/TE), unfilled slots at replacement level."""
+    (best leftover available RB/WR/TE). Replacement level is a FLOOR on EVERY
+    starter slot (not just literally-empty ones): a manager can always stream a
+    replacement-level player into a slot, so a rostered player worth LESS than
+    replacement never lowers the slot below it. Flooring on filled slots (not
+    only empty ones) is required for the marginal E[roster+X]-E[roster] to be
+    >= 0 -- without it a sub-replacement bench add DISPLACES the replacement
+    fill and produces spurious NEGATIVE marginals (the iter-2 B TE3 bug)."""
     s, w, _ = avail.shape
     pos_idx = _pos_index(positions)
     total = np.zeros((s, w))
     flex_leftovers = []
     for pos, need in STARTERS.items():
+        r = repl.get(pos, 0.0)
         idxs = pos_idx.get(pos, [])
         n = len(idxs)
         if n == 0:
-            total += need * repl.get(pos, 0.0)
+            total += need * r
             continue
         vals = np.where(avail[..., idxs], proj[idxs][None, None, :], _NEG)
         sd = -np.sort(-vals, axis=-1)  # (S,W,n) descending, unavailable -> _NEG
         take = min(need, n)
-        top = sd[..., :take]
-        total += np.where(top > _NEG / 2, top, repl.get(pos, 0.0)).sum(-1)
+        # max(slot player, replacement): empty (_NEG) and below-replacement
+        # rostered players both floor to r.
+        total += np.maximum(sd[..., :take], r).sum(-1)
         if need > n:
-            total += (need - n) * repl.get(pos, 0.0)
+            total += (need - n) * r
         if pos in FLEX_POS and n > need:
             flex_leftovers.append(sd[..., need:])
     if flex_leftovers:
-        allleft = np.concatenate(flex_leftovers, axis=-1)
-        best = allleft.max(-1)
-        total += np.where(best > _NEG / 2, best, flex_repl)
+        best = np.concatenate(flex_leftovers, axis=-1).max(-1)
     else:
-        total += flex_repl
+        best = np.full((s, w), _NEG)
+    total += np.maximum(best, flex_repl)  # flex replacement floor
     return float(total.mean())
 
 
