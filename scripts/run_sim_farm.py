@@ -1,29 +1,33 @@
 #!/usr/bin/env python3
-"""Nightly sim farm (Phase 3 / Task 12; Task 6 extension): the 72-cell
-strategy grid -- QB timing (6 plans, each a (qb_not_before, qb_by_round) pair
--- Task 11's plan amendment, since qb_by_round deadlines alone never bind
-under qb_hoard_12 VORP) x DEF/K round (4) x tier-break bonus (2) = 48 "main"
-cells at scenario qb_hoard_12, PLUS the 6 QB plans crossed with all 3
-QB-hoard scenarios at defk_round=14/tier_break=0.0 = 18 "qb_subgrid" cells,
-PLUS 6 `qb_tier_targets` plans (Phase 4 Task 6: a *which-QB* filter by tier,
-crossed against nothing else -- fixed at the qb_subgrid's plan-1-adjacent
-knobs) = 6 "qb_tier" cells. 72 cells x 200 seeded drafts x 20 MC seasons
-each = 14,400 drafts/night.
+"""Nightly sim farm (Phase 3 / Task 12; v2 deploy re-center 2026-07-21): a
+LIGHT sensitivity grid around the DEPLOYED v2 strategy (the A' starts-weighted
+engine, `ffi.sim.strategy.DEPLOYED_PARAMS`, `pstart_weights` path). Every cell
+is A' -- built by `dataclasses.replace(DEPLOYED_PARAMS, ...)` -- so the anchor
+cell reproduces the live strategy EXACTLY and each sensitivity cell varies only
+one still-meaningful knob:
 
-Per cell: one `sim.batches` row (kind='farm', git SHA, full data_vintage --
-see `build_data_vintage`) + one `sim.batch_results` row per metric
-(all_play_pct, all_play_se, top3_rate, qb1_round_mean, def_round_mean) + 3
-`sim.sample_drafts` rows (worst/best/random by our-seat all-play%, full
-228-pick log + our 19-player roster).
+  - qb_by_round: the QB-timing FORCE (emergent QB provably loses to a QB run, so
+    v2 keeps a force). 5 plans, anchor first = (2, 5, 14).
+  - defk_round:  DEF/K force timing. 3 rounds, anchor = 14.
+
+= 5 x 3 = 15 cells at scenario qb_hoard_12. The old knobs are RETIRED under A'
+and dropped from the grid (no fabricated evidence): `tier_break_bonus` and
+`qb_not_before` do not affect A' scoring; `qb_tier_targets` only narrows the
+rare voluntary rule-4 QB (QBs are force-driven); and the qb_hoard_0/12/24
+scenarios now share one valuation (Phase B made QB replacement a fixed QB24, not
+scenario-dependent), so a scenario subgrid would be three identical cells.
+
+Per cell: one `sim.batches` row (kind='farm', git SHA, full data_vintage) + one
+`sim.batch_results` row per metric + 3 `sim.sample_drafts` rows (worst/best/
+random by our-seat all-play%). Metrics now include **playoff_make_pct** (H2H
+12-team round-robin, our seat's rank<=6 rate over the MC seasons -- the project's
+TRUSTED metric; all-play and top3 flatter under the MC evaluator). Only cross-
+cell DELTAS of any metric are citable, not absolute levels (MC evaluator caveat).
 
 ADR D2 (data-vintage / staleness): `build_data_vintage` refuses (SystemExit,
 before any drafting) if the latest season-level Sleeper ADP snapshot is more
 than `STALE_HOURS` old, OR if the valuation snapshot baked into
-`valuation.player_value.params->>'snapshot_id'` for the scenario being built
-doesn't match that latest ADP snapshot -- a silent blend of a stale
-valuation against a fresher ADP board is exactly the failure mode Task 4's
-review forbade (a mismatch means `build_pool`'s ADP CTE and its VORP/tier
-columns would be reading two different snapshots without saying so).
+`valuation.player_value.params->>'snapshot_id'` doesn't match it.
 
 ADR D8 (errors-only logging): no per-draft prints; exactly one summary line
 per cell to stdout, plus one final wall-time line.
@@ -50,32 +54,31 @@ from ffi.sim.draft import run_draft, snake_position
 from ffi.sim.opponent import DEFAULT_OPPONENT_PARAMS, ROSTER_DAMP
 from ffi.sim.pool import build_pool
 from ffi.sim.priors import build_slot_priors
-from ffi.sim.season import evaluate_league, fit_weekly_points_cv
-from ffi.sim.strategy import StrategyParams, make_strategy_fn
+from ffi.sim.season import (
+    REG_WEEKS,
+    _build_index,
+    _lineup_total,
+    _mc_weekly_points,
+    fit_weekly_points_cv,
+)
+from ffi.sim.strategy import DEPLOYED_PARAMS, StrategyParams, make_strategy_fn
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 STALE_HOURS = 36  # ADR D2 -- same threshold as morning_briefing.py / draft board
 
-QB_PLANS = [  # (qb_not_before, qb_by_round)
-    ((1, 1, 1), (1, 4, 9)),  # take QBs as VORP dictates (front-loaded)
-    ((1, 3, 6), (2, 5, 9)),  # slight stagger
-    ((2, 5, 9), (3, 6, 10)),  # delayed QB1 to R2, spread hoard
-    ((3, 6, 10), (4, 8, 12)),  # contrarian: first QB no earlier than R3
-    ((1, 2, 4), (2, 4, 6)),  # aggressive 3-QB hoard early
-    ((1, 4, 99), (2, 7, 19)),  # effectively 2-QB build (third QB never required)
+# A' sensitivity grid: vary one meaningful knob at a time around DEPLOYED.
+ANCHOR_QB_BY_ROUND = DEPLOYED_PARAMS.qb_by_round  # (2, 5, 14)
+ANCHOR_DEFK = DEPLOYED_PARAMS.defk_round  # 14
+QB_BY_ROUND_PLANS = [
+    (2, 5, 14),  # anchor = DEPLOYED (QB1 by R2, QB2 by R5, QB3 by R14)
+    (1, 4, 9),  # earlier QBs / earlier forced QB3
+    (2, 5, 9),  # earlier forced QB3
+    (3, 6, 10),  # later QB1 (contrarian)
+    (2, 7, 19),  # effectively a 2-QB build (QB3 never force-required)
 ]
-DEFK_ROUNDS = [8, 11, 14, 18]  # tests the Phase 2 DRAFT-EARLY verdicts in context
-TIER_BREAK = [0.0, 8.0]
-SCENARIOS_MAIN = ["qb_hoard_12"]
-SCENARIOS_QB_SUBGRID = ["qb_hoard_0", "qb_hoard_12", "qb_hoard_24"]
-# Phase 4 Task 6: qb_tier_targets plans -- QB_TIER_PLANS[i][n] = max tier
-# acceptable for voluntarily drafting QB #(n+1) in rule 4 (see
-# ffi.sim.strategy.StrategyParams.qb_tier_targets). () is the control cell:
-# disabled, so this cell is identical to the qb_subgrid's plan-1-adjacent
-# cell (qb_not_before=(1,1,1), qb_by_round=(2,5,9)) -- a within-night
-# tier-targeting-off baseline.
-QB_TIER_PLANS = [(), (1, 2, 99), (2, 2, 99), (2, 3, 99), (1, 3, 99), (2, 3, 3)]
+DEFK_ROUNDS = [11, 14, 18]  # anchor = 14
+SCENARIO = "qb_hoard_12"  # deployed scenario (qb_hoard_0/24 now identical)
 N_DRAFTS_PER_CELL = 200
 SEASONS_PER_DRAFT = 20
 OUR_FRANCHISE_SLOT = 12
@@ -86,6 +89,8 @@ SEED_BASE_MULT = 100003
 METRICS = (
     "all_play_pct",
     "all_play_se",
+    "playoff_make_pct",  # v2: trusted H2H metric (cross-cell deltas citable)
+    "playoff_make_se",
     "top3_rate",
     "qb1_round_mean",
     "def_round_mean",
@@ -98,79 +103,55 @@ METRICS = (
 
 
 def build_grid() -> list[dict]:
-    """The 72-cell grid, in deterministic build order: 48 "main" cells (QB
-    plan x defk_round x tier_break, scenario fixed at qb_hoard_12), then 18
-    "qb_subgrid" cells (QB plan x scenario, defk_round=14/tier_break=0.0
-    fixed), then 6 "qb_tier" cells (qb_tier_targets plan, everything else
-    fixed at scenario=qb_hoard_12/qb_not_before=(1,1,1)/qb_by_round=(2,5,9)/
-    defk_round=14/tier_break_bonus=0.0). `cell_idx` is assigned sequentially
-    over this same order, 0-71, and is the only thing (besides
-    `--base-seed`) `derive_seed` needs to reproduce any draft in the farm."""
+    """The 15-cell A' sensitivity grid (qb_by_round x defk_round, scenario
+    fixed), anchor first. `grid` labels the sensitivity axis: 'anchor' (the
+    live DEPLOYED cell), 'qb_timing' (defk at anchor, qb varied), 'defk' (qb at
+    anchor, defk varied), 'cross' (both off-anchor). `cell_idx` is sequential
+    0-14 and, with `--base-seed`, is all `derive_seed` needs to reproduce any
+    draft."""
     cells: list[dict] = []
-    idx = 0
-    for qb_plan_idx, (qb_not_before, qb_by_round) in enumerate(QB_PLANS):
-        for defk_round in DEFK_ROUNDS:
-            for tier_break in TIER_BREAK:
-                cells.append(
-                    {
-                        "cell_idx": idx,
-                        "grid": "main",
-                        "scenario": SCENARIOS_MAIN[0],
-                        "qb_plan_idx": qb_plan_idx,
-                        "qb_not_before": qb_not_before,
-                        "qb_by_round": qb_by_round,
-                        "defk_round": defk_round,
-                        "tier_break_bonus": tier_break,
-                    }
-                )
-                idx += 1
-    for qb_plan_idx, (qb_not_before, qb_by_round) in enumerate(QB_PLANS):
-        for scenario in SCENARIOS_QB_SUBGRID:
-            cells.append(
-                {
-                    "cell_idx": idx,
-                    "grid": "qb_subgrid",
-                    "scenario": scenario,
-                    "qb_plan_idx": qb_plan_idx,
-                    "qb_not_before": qb_not_before,
-                    "qb_by_round": qb_by_round,
-                    "defk_round": 14,
-                    "tier_break_bonus": 0.0,
-                }
-            )
-            idx += 1
-    for tier_plan_idx, qb_tier_targets in enumerate(QB_TIER_PLANS):
+
+    def add(grid, qb_by_round, defk_round):
         cells.append(
             {
-                "cell_idx": idx,
-                "grid": "qb_tier",
-                "scenario": "qb_hoard_12",
-                "qb_plan_idx": tier_plan_idx,  # index into QB_TIER_PLANS here
-                "qb_not_before": (1, 1, 1),
-                "qb_by_round": (2, 5, 9),
-                "defk_round": 14,
-                "tier_break_bonus": 0.0,
-                "qb_tier_targets": qb_tier_targets,
+                "cell_idx": len(cells),
+                "grid": grid,
+                "scenario": SCENARIO,
+                "qb_by_round": qb_by_round,
+                "defk_round": defk_round,
             }
         )
-        idx += 1
+
+    # cell 0 = anchor (the live DEPLOYED strategy), then one-knob-at-a-time, then
+    # the both-off-anchor cross cells -- so cell_idx 0 is always the reference.
+    add("anchor", ANCHOR_QB_BY_ROUND, ANCHOR_DEFK)
+    for qb_by_round in QB_BY_ROUND_PLANS:
+        if qb_by_round != ANCHOR_QB_BY_ROUND:
+            add("qb_timing", qb_by_round, ANCHOR_DEFK)
+    for defk_round in DEFK_ROUNDS:
+        if defk_round != ANCHOR_DEFK:
+            add("defk", ANCHOR_QB_BY_ROUND, defk_round)
+    for qb_by_round in QB_BY_ROUND_PLANS:
+        for defk_round in DEFK_ROUNDS:
+            if qb_by_round != ANCHOR_QB_BY_ROUND and defk_round != ANCHOR_DEFK:
+                add("cross", qb_by_round, defk_round)
     return cells
 
 
 def strategy_params_for_cell(cell: dict) -> StrategyParams:
-    return StrategyParams(
+    """A' params: DEPLOYED_PARAMS (pstart_weights + caps + qb_not_before all
+    inherited) with only qb_by_round/defk_round/scenario overridden."""
+    return dataclasses.replace(
+        DEPLOYED_PARAMS,
         scenario=cell["scenario"],
         qb_by_round=cell["qb_by_round"],
-        qb_not_before=cell["qb_not_before"],
         defk_round=cell["defk_round"],
-        tier_break_bonus=cell["tier_break_bonus"],
-        qb_tier_targets=cell.get("qb_tier_targets", ()),
     )
 
 
 def derive_seed(base_seed: int, cell_idx: int, draft_idx: int) -> int:
     """`base_seed x 100003 + cell_idx x 1009 + draft_idx` -- collision-free
-    for cell_idx in 0-71 and draft_idx in 0-199 (1009 > 199)."""
+    for cell_idx in 0-14 and draft_idx in 0-199 (1009 > 199)."""
     return base_seed * SEED_BASE_MULT + cell_idx * SEED_CELL_MULT + draft_idx
 
 
@@ -184,6 +165,55 @@ def is_top3(pct_map: dict, our_position: int) -> bool:
         1 for pos, pct in pct_map.items() if pos != our_position and pct > our_pct
     )
     return beat_us <= 2
+
+
+def _round_robin(n: int) -> list:
+    """Circle-method 12-team round-robin schedule (11 weekly rounds of 6
+    matchups). Same construction tournament_v2/qb_timing_h2h use."""
+    teams, rounds = list(range(n)), []
+    for _ in range(n - 1):
+        rounds.append([(teams[i], teams[n - 1 - i]) for i in range(n // 2)])
+        teams = [teams[0]] + [teams[-1]] + teams[1:-1]
+    return rounds
+
+
+_RR = _round_robin(12)
+
+
+def evaluate_draft(
+    rosters: dict, cv_by_pos: dict, seed: int, n_seasons: int, our_position: int
+) -> tuple:
+    """One draft's MC evaluation, returning (all_play_map, playoff_make_pct).
+    Draws weekly points ONCE (`_mc_weekly_points`, same seed as before) and
+    derives both metrics from the shared (team, season, week) optimal-lineup
+    totals -- so `all_play_map` is identical to `evaluate_league`'s and the H2H
+    playoff-make comes free. playoff-make = fraction of the MC seasons in which
+    our seat ranks top-6 in a 12-team round-robin on weekly lineup totals
+    (rank = #teams with strictly more H2H wins + 1; ties go to the winner of the
+    lower-indexed seat, matching backtest_p_starts.h2h_playoff)."""
+    tk, flat, pos_idx = _build_index(rosters)
+    n_teams = len(tk)
+    points = _mc_weekly_points(flat, cv_by_pos, seed, n_seasons)  # (S,W,P)
+    totals = np.stack([_lineup_total(points, pos_idx[t]) for t in tk])  # (T,S,W)
+
+    # all-play (identical formula to evaluate_league)
+    gt = totals[:, None, :, :] > totals[None, :, :, :]
+    total_wins = gt.sum(axis=1).sum(axis=(1, 2))  # (T,)
+    denom = (n_teams - 1) * n_seasons * REG_WEEKS
+    all_play = {tk[i]: float(total_wins[i] / denom) for i in range(n_teams)}
+
+    # H2H round-robin per season -> seasonal wins per team
+    seasonal_wins = np.zeros((n_teams, n_seasons))
+    for w in range(REG_WEEKS):
+        for a, b in _RR[w % len(_RR)]:
+            a_wins = totals[a, :, w] >= totals[b, :, w]  # (S,)
+            seasonal_wins[a] += a_wins
+            seasonal_wins[b] += ~a_wins
+    our_ti = tk.index(our_position)
+    our_wins = seasonal_wins[our_ti]  # (S,)
+    rank = (seasonal_wins > our_wins[None, :]).sum(axis=0) + 1  # (S,)
+    playoff_make = float((rank <= 6).mean())
+    return all_play, playoff_make
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +368,7 @@ def run_cell(
     pick_fn = make_strategy_fn(strategy_params)
 
     lightweight: list[tuple[int, float]] = []
+    playoff_flags: list[float] = []
     top3_flags: list[bool] = []
     qb1_rounds: list[int] = []
     def1_rounds: list[int] = []
@@ -347,11 +378,12 @@ def run_cell(
         result = run_draft(
             pool, priors, pick_fn, seed=seed, our_franchise_slot=our_franchise_slot
         )
-        pct_map = evaluate_league(
-            result.rosters, cv_by_pos=cv_by_pos, seed=seed, n_seasons=n_seasons
+        pct_map, playoff_make = evaluate_draft(
+            result.rosters, cv_by_pos, seed, n_seasons, result.our_position
         )
         our_pct = pct_map[result.our_position]
         lightweight.append((seed, our_pct))
+        playoff_flags.append(playoff_make)
         top3_flags.append(is_top3(pct_map, result.our_position))
 
         our_picks = _our_picks(result.picks, result.our_position)
@@ -366,6 +398,8 @@ def run_cell(
     all_play_vals = [pct for _, pct in lightweight]
     mean_pct = statistics.mean(all_play_vals)
     se_pct = statistics.stdev(all_play_vals) / math.sqrt(n) if n > 1 else 0.0
+    playoff_mean = statistics.mean(playoff_flags)
+    playoff_se = statistics.stdev(playoff_flags) / math.sqrt(n) if n > 1 else 0.0
     # top3_rate ranks by all-play pct (via is_top3/pct_map), not by raw PF as
     # the original plan doc phrased it -- controller-approved deviation, kept
     # consistent with all_play_pct's own ranking basis elsewhere in this module.
@@ -387,8 +421,8 @@ def run_cell(
         result = run_draft(
             pool, priors, pick_fn, seed=seed, our_franchise_slot=our_franchise_slot
         )
-        pct_map = evaluate_league(
-            result.rosters, cv_by_pos=cv_by_pos, seed=seed, n_seasons=n_seasons
+        pct_map, _ = evaluate_draft(
+            result.rosters, cv_by_pos, seed, n_seasons, result.our_position
         )
         samples[reason] = {
             "seed": seed,
@@ -401,10 +435,13 @@ def run_cell(
     return {
         "all_play_pct": mean_pct,
         "all_play_se": se_pct,
+        "playoff_make_pct": playoff_mean,
+        "playoff_make_se": playoff_se,
         "top3_rate": top3_rate,
         "qb1_round_mean": qb1_round_mean,
         "def_round_mean": def_round_mean,
         "n_drafts": n,
+        "n_seasons": n_seasons,
         "samples": samples,
     }
 
@@ -429,7 +466,6 @@ def persist_cell(
         **dataclasses.asdict(strategy_params),
         "cell_idx": cell["cell_idx"],
         "grid": cell["grid"],
-        "qb_plan_idx": cell["qb_plan_idx"],
     }
     with conn.cursor() as cur:
         cur.execute(
@@ -446,7 +482,7 @@ def persist_cell(
                 json.dumps(strategy_json),
                 json.dumps(opponent_params),
                 cell_result["n_drafts"],
-                SEASONS_PER_DRAFT,
+                cell_result["n_seasons"],
                 base_seed,
                 json.dumps(data_vintage),
             ),
@@ -493,14 +529,31 @@ def main() -> None:
     ap.add_argument(
         "--cells", type=int, default=None, help="dev cap: only run the first N cells"
     )
+    ap.add_argument(
+        "--n-drafts", type=int, default=N_DRAFTS_PER_CELL, help="drafts per cell"
+    )
+    ap.add_argument(
+        "--n-seasons", type=int, default=SEASONS_PER_DRAFT, help="MC seasons per draft"
+    )
+    ap.add_argument(
+        "--smoke",
+        action="store_true",
+        help="fast end-to-end check: 3 cells x 12 drafts x 5 MC seasons",
+    )
     args = ap.parse_args()
+
+    n_drafts = args.n_drafts
+    n_seasons = args.n_seasons
+    n_cells = args.cells
+    if args.smoke:
+        n_cells, n_drafts, n_seasons = 3, 12, 5
 
     conn = connect()
     cfg = load_config_v1()
 
     cells = build_grid()
-    if args.cells is not None:
-        cells = cells[: args.cells]
+    if n_cells is not None:
+        cells = cells[:n_cells]
 
     priors = build_slot_priors(conn)
     cv_by_pos = fit_weekly_points_cv(conn)
@@ -530,7 +583,14 @@ def main() -> None:
         params = strategy_params_for_cell(cell)
         pool = pool_by_scenario[cell["scenario"]]
         result = run_cell(
-            pool, priors, cv_by_pos, params, args.base_seed, cell["cell_idx"]
+            pool,
+            priors,
+            cv_by_pos,
+            params,
+            args.base_seed,
+            cell["cell_idx"],
+            n_drafts=n_drafts,
+            n_seasons=n_seasons,
         )
         persist_cell(
             conn,
@@ -545,10 +605,10 @@ def main() -> None:
         )
         print(
             f"cell {cell['cell_idx']:02d}/{len(cells)} grid={cell['grid']} "
-            f"scenario={cell['scenario']} qb_plan={cell['qb_plan_idx']} "
-            f"defk={cell['defk_round']} tb={cell['tier_break_bonus']}: "
-            f"all_play={result['all_play_pct']:.4f} se={result['all_play_se']:.4f} "
-            f"top3={result['top3_rate']:.3f}"
+            f"qb_by_round={cell['qb_by_round']} defk={cell['defk_round']}: "
+            f"all_play={result['all_play_pct']:.4f} "
+            f"playoff_make={result['playoff_make_pct']:.4f} "
+            f"(se {result['playoff_make_se']:.4f}) top3={result['top3_rate']:.3f}"
         )
 
     elapsed = (datetime.datetime.now() - t0).total_seconds()

@@ -7,14 +7,12 @@ ADR D5 mandate: the report's header carries its own data-vintage line (snapshot
 id/age, valuation timestamp, priors latest season, git SHA, degraded flags) so
 a stale-input farm run can't masquerade as fresh strategy evidence.
 
-Sections (brief order): data-vintage header; QB-policy table (all-play% +/-
-1.96*se by qb plan x scenario, from the 18-cell qb_subgrid); DEF/K table
-(all-play% by defk_round, from the 48-cell main grid); tier-break delta;
+Sections (brief order): data-vintage header; strategy sensitivity grid
+(playoff-make% + all-play% per A' cell, each cell's playoff-make DELTA vs the
+DEPLOYED anchor -- the citable signal; absolute levels are MC-inflated);
 worst-drafts narrative (pick-by-pick, from the stored 'worst' sample_drafts);
-assumption audit (sim league-wide QB1-round mean vs historical 1.83, sim
-position-share by round band vs priors -- both computed from the stored
-sample_drafts' full 228-pick logs, a ~198-draft cross-section of the night's
-13,200, not a full-farm recompute).
+assumption audit (sim league-wide QB1-round mean vs historical, sim
+position-share by round band vs priors -- from a uniform opponent sample).
 
 Exits nonzero if any of today's batches carries `data_vintage.degraded=true`
 (a stale/mismatched run should never be read as fresh strategy evidence).
@@ -145,99 +143,53 @@ def _vintage_header(batches: list) -> list[str]:
     return lines
 
 
-def _qb_policy_table(batches: list) -> list[str]:
-    sub = [b for b in batches if b["strategy"].get("grid") == "qb_subgrid"]
-    lines = ["## QB-policy table (all-play% +/- 1.96*se, qb plan x scenario)", ""]
-    if not sub:
-        lines.append("_(no qb_subgrid cells found for this date)_")
+def _strategy_grid_table(batches: list) -> list[str]:
+    """The v2 A' sensitivity grid: one row per cell, playoff-make% (the trusted
+    H2H metric) and all-play% each with +/-1.96*se, plus each cell's playoff-make
+    DELTA vs the anchor (the live DEPLOYED strategy). Absolute levels are MC-
+    inflated (see evaluator caveat); the citable signal is the delta column."""
+    lines = ["## Strategy sensitivity grid (A' engine, anchored on DEPLOYED)", ""]
+    if not batches:
+        lines.append("_(no farm cells found for this date)_")
         return lines
+    anchor = next((b for b in batches if b["strategy"].get("grid") == "anchor"), None)
+    anchor_pm = anchor["metrics"].get("playoff_make_pct") if anchor else None
     lines.append(
-        "| qb_plan_idx | qb_by_round | scenario | all-play% | +/- CI | top3_rate* |"
+        "| cell | axis | qb_by_round | defk | playoff-make% +/-CI | "
+        "Δ vs anchor | all-play% +/-CI |"
     )
-    lines.append("|---|---|---|---|---|---|")
-    for b in sorted(
-        sub, key=lambda b: (b["strategy"]["qb_plan_idx"], b["strategy"]["scenario"])
-    ):
-        m = b["metrics"]
-        pct = m.get("all_play_pct")
-        se = m.get("all_play_se", 0.0)
-        ci = 1.96 * se
-        top3 = m.get("top3_rate")
-        top3_str = _fmt_pct(top3) if top3 is not None else "n/a"
+    lines.append("|---|---|---|---|---|---|---|")
+    for b in sorted(batches, key=lambda b: b["strategy"].get("cell_idx", 0)):
+        s, m = b["strategy"], b["metrics"]
+        pm = m.get("playoff_make_pct")
+        pm_ci = 1.96 * m.get("playoff_make_se", 0.0)
+        ap = m.get("all_play_pct")
+        ap_ci = 1.96 * m.get("all_play_se", 0.0)
+        delta = (
+            "anchor"
+            if s.get("grid") == "anchor"
+            else (
+                f"{(pm - anchor_pm) * 100:+.1f}pp"
+                if (pm is not None and anchor_pm is not None)
+                else "n/a"
+            )
+        )
+        pm_s = f"{_fmt_pct(pm)} +/- {_fmt_pct(pm_ci)}" if pm is not None else "n/a"
+        ap_s = f"{_fmt_pct(ap)} +/- {_fmt_pct(ap_ci)}" if ap is not None else "n/a"
         lines.append(
-            f"| {b['strategy']['qb_plan_idx']} | {tuple(b['strategy']['qb_by_round'])} | "
-            f"{b['scenario']} | {_fmt_pct(pct)} | +/- {_fmt_pct(ci)} | {top3_str} |"
+            f"| {s.get('cell_idx')} | {s.get('grid')} | "
+            f"{tuple(s.get('qb_by_round', ()))} | {s.get('defk_round')} | "
+            f"{pm_s} | {delta} | {ap_s} |"
         )
     lines.append("")
     lines.append(
-        "_*top3_rate is saturated (observed ~0.994 fleet-wide) -- see evaluator "
-        "caveat above; read cross-cell deltas only, not the absolute value._"
+        "_playoff-make% is the project's trusted metric, but its ABSOLUTE level "
+        "is MC-inflated (no bust/injury variance -- our VORP-argmax seat makes "
+        "the top-6 in nearly every simulated season). Cite only the **Δ vs "
+        "anchor** column (does this qb_by_round/defk_round beat the deployed "
+        "cell), never the absolute rate. all-play% and top3_rate flatter for the "
+        "same reason._"
     )
-    return lines
-
-
-def _defk_table(batches: list) -> list[str]:
-    main = [b for b in batches if b["strategy"].get("grid") == "main"]
-    lines = ["## DEF/K table (all-play% by defk_round, main grid)", ""]
-    if not main:
-        lines.append("_(no main-grid cells found for this date)_")
-        return lines
-    by_defk = defaultdict(list)
-    by_defk_top3 = defaultdict(list)
-    for b in main:
-        by_defk[b["strategy"]["defk_round"]].append(
-            b["metrics"].get("all_play_pct", 0.0)
-        )
-        by_defk_top3[b["strategy"]["defk_round"]].append(
-            b["metrics"].get("top3_rate", 0.0)
-        )
-    lines.append("| defk_round | mean all-play% | mean top3_rate* | n cells |")
-    lines.append("|---|---|---|---|")
-    for defk_round in sorted(by_defk):
-        vals = by_defk[defk_round]
-        mean = sum(vals) / len(vals)
-        top3_vals = by_defk_top3[defk_round]
-        top3_mean = sum(top3_vals) / len(top3_vals)
-        lines.append(
-            f"| {defk_round} | {_fmt_pct(mean)} | {_fmt_pct(top3_mean)} | {len(vals)} |"
-        )
-    lines.append("")
-    lines.append(
-        "_*top3_rate is saturated (observed ~0.994 fleet-wide) -- see evaluator "
-        "caveat above; read cross-cell deltas only, not the absolute value._"
-    )
-    return lines
-
-
-def _tier_break_delta(batches: list) -> list[str]:
-    main = [b for b in batches if b["strategy"].get("grid") == "main"]
-    lines = [
-        "## Tier-break delta (main grid)",
-        "",
-        "_Caps are fixed across the whole grid this milestone -- not gridded, "
-        "so no caps delta is reported (would be fabricated evidence)._",
-        "",
-    ]
-    if not main:
-        lines.append("_(no main-grid cells found for this date)_")
-        return lines
-    by_tb = defaultdict(list)
-    for b in main:
-        by_tb[b["strategy"]["tier_break_bonus"]].append(
-            b["metrics"].get("all_play_pct", 0.0)
-        )
-    means = {tb: sum(v) / len(v) for tb, v in by_tb.items()}
-    lines.append("| tier_break_bonus | mean all-play% | n cells |")
-    lines.append("|---|---|---|")
-    for tb in sorted(means):
-        lines.append(f"| {tb} | {_fmt_pct(means[tb])} | {len(by_tb[tb])} |")
-    if len(means) >= 2:
-        tbs = sorted(means)
-        delta = means[tbs[-1]] - means[tbs[0]]
-        lines.append("")
-        lines.append(
-            f"Delta (tier_break={tbs[-1]} minus tier_break={tbs[0]}): {_fmt_pct(delta)}"
-        )
     return lines
 
 
@@ -423,11 +375,7 @@ def render_report(conn, date: datetime.date) -> tuple[str, bool]:
         "higher or lower top3_rate than another), the same as all-play%.",
         "",
     ]
-    lines += _qb_policy_table(batches)
-    lines.append("")
-    lines += _defk_table(batches)
-    lines.append("")
-    lines += _tier_break_delta(batches)
+    lines += _strategy_grid_table(batches)
     lines.append("")
     lines += _worst_drafts_section(batches, sample_drafts)
     lines.append("")

@@ -4,9 +4,15 @@ staleness/mismatch refusal, cell persistence) and scripts/sim_report.py
 brief) -- the heavy simulate-and-persist path is exercised with `run_cell`
 monkeypatched to a canned result, mirroring `tests/test_run_backtests.py`'s
 pattern for `run_all_cells`.
+
+v2 deploy re-center (2026-07-21): the farm is now a 15-cell A' sensitivity grid
+(qb_by_round x defk_round) anchored on DEPLOYED_PARAMS, and every cell records
+`playoff_make_pct` (H2H) alongside all_play. The old 72-cell QB_PLANS/qb_subgrid/
+qb_tier/tier_break design is retired; these tests track the new grid.
 """
 import datetime
 import sys
+from collections import Counter
 
 import pytest
 
@@ -15,170 +21,67 @@ from simfixtures import synthetic_priors
 import run_sim_farm
 import sim_report
 from ffi.sim.calibrate import QbTimingMeasurement
-from ffi.sim.strategy import StrategyParams
+from ffi.sim.strategy import DEPLOYED_PARAMS
 
 # Fixed sim-batch date for the render_report/main_for_date integration tests
-# below. `_seed_batch` pins `sim.batches.started_at`/`finished_at` to this
-# exact timestamp rather than letting the column fall back to its `now()`
-# default -- `sim_report.load_batches` filters `started_at::date = %s`, so a
-# fixture that relies on `now()` silently depends on the real wall-clock date
-# matching the hardcoded query date, and breaks the instant a test run
-# crosses a real calendar-day boundary (observed live: 2026-07-10 ->
-# 2026-07-11 mid-session broke all 7 tests below). One source of truth here;
-# change this constant, not the call sites.
+# below (see original note: pins started_at so a calendar-day boundary can't
+# break the fixture). One source of truth; change here, not the call sites.
 BATCH_DATE = datetime.date(2026, 7, 10)
 BATCH_STARTED_AT = datetime.datetime(2026, 7, 10, 12, 0, tzinfo=datetime.timezone.utc)
 
+
 # ---------------------------------------------------------------------------
-# Grid construction (72 cells, deterministic order, exact knob values)
+# Grid construction (15-cell A' sensitivity grid, anchor-first)
 # ---------------------------------------------------------------------------
 
 
-def test_grid_has_72_cells():
-    cells = run_sim_farm.build_grid()
-    assert len(cells) == 72
+def test_grid_has_15_cells():
+    assert len(run_sim_farm.build_grid()) == 15
 
 
 def test_grid_cell_idx_is_sequential_from_zero():
     cells = run_sim_farm.build_grid()
-    assert [c["cell_idx"] for c in cells] == list(range(72))
+    assert [c["cell_idx"] for c in cells] == list(range(15))
 
 
-def test_grid_main_block_is_48_cells_qb_hoard_12_only():
-    cells = run_sim_farm.build_grid()
-    main_cells = [c for c in cells if c["grid"] == "main"]
-    assert len(main_cells) == 48
-    assert all(c["scenario"] == "qb_hoard_12" for c in main_cells)
+def test_grid_cell0_is_anchor_deployed():
+    a = run_sim_farm.build_grid()[0]
+    assert a["grid"] == "anchor"
+    assert a["qb_by_round"] == run_sim_farm.ANCHOR_QB_BY_ROUND == (2, 5, 14)
+    assert a["defk_round"] == run_sim_farm.ANCHOR_DEFK == 14
+    assert a["scenario"] == "qb_hoard_12"
 
 
-def test_grid_subgrid_block_is_18_cells_defk_14_tb_0():
-    cells = run_sim_farm.build_grid()
-    sub_cells = [c for c in cells if c["grid"] == "qb_subgrid"]
-    assert len(sub_cells) == 18
-    assert all(c["defk_round"] == 14 for c in sub_cells)
-    assert all(c["tier_break_bonus"] == 0.0 for c in sub_cells)
-    assert {c["scenario"] for c in sub_cells} == {
-        "qb_hoard_0",
-        "qb_hoard_12",
-        "qb_hoard_24",
-    }
+def test_grid_all_cells_scenario_qb_hoard_12():
+    assert all(c["scenario"] == "qb_hoard_12" for c in run_sim_farm.build_grid())
 
 
-def test_grid_first_cell_matches_first_qb_plan_first_defk_first_tb():
-    cells = run_sim_farm.build_grid()
-    first = cells[0]
-    assert first["qb_not_before"] == (1, 1, 1)
-    assert first["qb_by_round"] == (1, 4, 9)
-    assert first["defk_round"] == 8
-    assert first["tier_break_bonus"] == 0.0
-    assert first["scenario"] == "qb_hoard_12"
+def test_grid_axis_labels_and_counts():
+    counts = Counter(c["grid"] for c in run_sim_farm.build_grid())
+    # 1 anchor + 4 qb_timing (5 plans - anchor) + 2 defk (3 rounds - anchor)
+    # + 8 cross (4 off-anchor qb x 2 off-anchor defk)
+    assert counts == {"anchor": 1, "qb_timing": 4, "defk": 2, "cross": 8}
 
 
-def test_grid_last_main_cell_is_last_qb_plan_last_defk_last_tb():
-    cells = run_sim_farm.build_grid()
-    last_main = cells[47]
-    assert last_main["grid"] == "main"
-    assert last_main["qb_not_before"] == (1, 4, 99)
-    assert last_main["qb_by_round"] == (2, 7, 19)
-    assert last_main["defk_round"] == 18
-    assert last_main["tier_break_bonus"] == 8.0
+def test_grid_qb_timing_cells_hold_defk_at_anchor():
+    for c in run_sim_farm.build_grid():
+        if c["grid"] == "qb_timing":
+            assert c["defk_round"] == run_sim_farm.ANCHOR_DEFK
+            assert c["qb_by_round"] != run_sim_farm.ANCHOR_QB_BY_ROUND
 
 
-def test_grid_main_cells_2_and_3_are_second_defk_round_value():
-    # Closes a coverage gap: DEFK_ROUNDS' mid-range value (11, index 1 of
-    # [8, 11, 14, 18]) is otherwise never pinned down by an exact-value
-    # assertion (only the first (8) and last (18) values were).
-    cells = run_sim_farm.build_grid()
-    assert cells[2]["defk_round"] == run_sim_farm.DEFK_ROUNDS[1] == 11
-    assert cells[2]["tier_break_bonus"] == 0.0
-    assert cells[3]["defk_round"] == 11
-    assert cells[3]["tier_break_bonus"] == 8.0
+def test_grid_defk_cells_hold_qb_at_anchor():
+    for c in run_sim_farm.build_grid():
+        if c["grid"] == "defk":
+            assert c["qb_by_round"] == run_sim_farm.ANCHOR_QB_BY_ROUND
+            assert c["defk_round"] != run_sim_farm.ANCHOR_DEFK
 
 
-def test_grid_main_block_has_12_cells_per_defk_round():
-    cells = run_sim_farm.build_grid()
-    main_cells = [c for c in cells if c["grid"] == "main"]
-    counts = {}
-    for c in main_cells:
-        counts[c["defk_round"]] = counts.get(c["defk_round"], 0) + 1
-    assert counts == {8: 12, 11: 12, 14: 12, 18: 12}
-
-
-def test_grid_last_subgrid_cell_is_last_qb_plan_last_subgrid_scenario():
-    cells = run_sim_farm.build_grid()
-    last_subgrid = cells[65]
-    assert last_subgrid["grid"] == "qb_subgrid"
-    assert last_subgrid["qb_not_before"] == (1, 4, 99)
-    assert last_subgrid["qb_by_round"] == (2, 7, 19)
-    assert last_subgrid["scenario"] == "qb_hoard_24"
-
-
-def test_grid_qb_plan_count_matches_grid_constant():
-    assert len(run_sim_farm.QB_PLANS) == 6
-    assert len(run_sim_farm.DEFK_ROUNDS) == 4
-    assert len(run_sim_farm.TIER_BREAK) == 2
-    assert len(run_sim_farm.QB_TIER_PLANS) == 6
-
-
-# ---------------------------------------------------------------------------
-# qb_tier block (Phase 4 Task 6): 6 cells, idx 66-71, everything but
-# qb_tier_targets fixed.
-# ---------------------------------------------------------------------------
-
-
-def test_grid_qb_tier_block_is_6_cells_idx_66_to_71():
-    cells = run_sim_farm.build_grid()
-    tier_cells = [c for c in cells if c["grid"] == "qb_tier"]
-    assert len(tier_cells) == 6
-    assert [c["cell_idx"] for c in tier_cells] == list(range(66, 72))
-
-
-def test_grid_qb_tier_block_fixed_knobs():
-    cells = run_sim_farm.build_grid()
-    tier_cells = [c for c in cells if c["grid"] == "qb_tier"]
-    assert all(c["scenario"] == "qb_hoard_12" for c in tier_cells)
-    assert all(c["qb_not_before"] == (1, 1, 1) for c in tier_cells)
-    assert all(c["qb_by_round"] == (2, 5, 9) for c in tier_cells)
-    assert all(c["defk_round"] == 14 for c in tier_cells)
-    assert all(c["tier_break_bonus"] == 0.0 for c in tier_cells)
-
-
-def test_grid_qb_tier_block_targets_match_plans_in_order():
-    cells = run_sim_farm.build_grid()
-    tier_cells = [c for c in cells if c["grid"] == "qb_tier"]
-    assert [c["qb_tier_targets"] for c in tier_cells] == run_sim_farm.QB_TIER_PLANS
-
-
-def test_grid_qb_tier_first_cell_is_control_disabled():
-    cells = run_sim_farm.build_grid()
-    control = cells[66]
-    assert control["qb_tier_targets"] == ()
-
-
-def test_grid_last_cell_overall_is_last_qb_tier_plan():
-    cells = run_sim_farm.build_grid()
-    last = cells[71]
-    assert last["grid"] == "qb_tier"
-    assert last["qb_tier_targets"] == (2, 3, 3)
-
-
-def test_strategy_params_for_cell_includes_qb_tier_targets():
-    cells = run_sim_farm.build_grid()
-    control = cells[66]
-    params = run_sim_farm.strategy_params_for_cell(control)
-    assert params.qb_tier_targets == ()
-
-    aggressive = cells[71]
-    params2 = run_sim_farm.strategy_params_for_cell(aggressive)
-    assert params2.qb_tier_targets == (2, 3, 3)
-
-
-def test_strategy_params_for_cell_main_grid_qb_tier_targets_defaults_empty():
-    # main/qb_subgrid cells have no "qb_tier_targets" key -- must default to
-    # () (inert), not KeyError.
-    cells = run_sim_farm.build_grid()
-    params = run_sim_farm.strategy_params_for_cell(cells[0])
-    assert params.qb_tier_targets == ()
+def test_grid_constants():
+    assert len(run_sim_farm.QB_BY_ROUND_PLANS) == 5
+    assert run_sim_farm.QB_BY_ROUND_PLANS[0] == (2, 5, 14)
+    assert len(run_sim_farm.DEFK_ROUNDS) == 3
+    assert 14 in run_sim_farm.DEFK_ROUNDS
 
 
 def test_grid_deterministic_across_calls():
@@ -206,31 +109,44 @@ def test_derive_seed_formula():
 def test_derive_seed_unique_across_cells_and_drafts():
     seeds = {
         run_sim_farm.derive_seed(1, cell_idx, draft_idx)
-        for cell_idx in range(72)
+        for cell_idx in range(15)
         for draft_idx in range(200)
     }
-    assert len(seeds) == 72 * 200
+    assert len(seeds) == 15 * 200
 
 
 # ---------------------------------------------------------------------------
-# Cell strategy construction
+# Cell strategy construction (every cell is A' = DEPLOYED with 2 knobs varied)
 # ---------------------------------------------------------------------------
 
 
-def test_strategy_params_for_cell_builds_expected_params():
-    cell = run_sim_farm.build_grid()[0]
-    params = run_sim_farm.strategy_params_for_cell(cell)
-    assert isinstance(params, StrategyParams)
-    assert params.scenario == "qb_hoard_12"
-    assert params.qb_by_round == (1, 4, 9)
-    assert params.qb_not_before == (1, 1, 1)
-    assert params.defk_round == 8
-    assert params.tier_break_bonus == 0.0
+def test_strategy_params_for_cell_anchor_equals_deployed():
+    params = run_sim_farm.strategy_params_for_cell(run_sim_farm.build_grid()[0])
+    assert params == DEPLOYED_PARAMS
+
+
+def test_strategy_params_for_cell_is_pstart_mode_with_overrides():
+    for cell in run_sim_farm.build_grid():
+        p = run_sim_farm.strategy_params_for_cell(cell)
+        assert p.pstart_weights == DEPLOYED_PARAMS.pstart_weights  # A' engine
+        assert p.pstart_weights != ()  # not legacy vorp mode
+        assert p.qb_by_round == cell["qb_by_round"]
+        assert p.defk_round == cell["defk_round"]
+        assert p.scenario == "qb_hoard_12"
 
 
 # ---------------------------------------------------------------------------
-# top3 rank helper
+# H2H playoff-make evaluator + top3 helper
 # ---------------------------------------------------------------------------
+
+
+def test_round_robin_is_11_rounds_of_6():
+    rr = run_sim_farm._round_robin(12)
+    assert len(rr) == 11
+    assert all(len(week) == 6 for week in rr)
+    # every team plays every other exactly once across the schedule
+    pairs = {tuple(sorted(m)) for week in rr for m in week}
+    assert len(pairs) == 66  # C(12, 2)
 
 
 def test_is_top3_true_when_two_or_fewer_teams_beat_ours():
@@ -379,10 +295,13 @@ def _canned_cell_result():
     return {
         "all_play_pct": 0.55,
         "all_play_se": 0.01,
+        "playoff_make_pct": 0.90,
+        "playoff_make_se": 0.02,
         "top3_rate": 0.4,
         "qb1_round_mean": 1.2,
         "def_round_mean": 14.0,
         "n_drafts": 200,
+        "n_seasons": 20,
         "samples": {"worst": sample, "best": sample, "random": sample},
     }
 
@@ -439,7 +358,7 @@ def test_main_persists_one_batch_per_cell_with_cells_cap(monkeypatch, db):
 
     n_batches, n_results, n_samples = _counts(db)
     assert n_batches == 3
-    assert n_results == 3 * 5  # 5 metrics per batch
+    assert n_results == 3 * 7  # 7 metrics per batch (incl. playoff_make_pct/se)
     assert n_samples == 3 * 3  # worst/best/random per batch
 
     with db.cursor() as cur:
@@ -451,6 +370,21 @@ def test_main_persists_one_batch_per_cell_with_cells_cap(monkeypatch, db):
         assert scenario == "qb_hoard_12"
         assert base_seed == 20260710
         assert data_vintage["priors_latest_season"] == 2025
+        # playoff-make metric is recorded
+        cur.execute(
+            "SELECT count(*) FROM sim.batch_results WHERE metric='playoff_make_pct'"
+        )
+        assert cur.fetchone()[0] == 3
+
+
+def test_smoke_flag_reduces_grid(monkeypatch, db):
+    _patch_common(monkeypatch, db)
+    monkeypatch.setattr(
+        sys, "argv", ["run_sim_farm.py", "--base-seed", "20260710", "--smoke"]
+    )
+    run_sim_farm.main()
+    n_batches, _, _ = _counts(db)
+    assert n_batches == 3  # --smoke caps to 3 cells
 
 
 def test_main_requires_base_seed(monkeypatch, db):
@@ -502,11 +436,8 @@ def test_git_sha_no_suffix_when_tree_is_clean(monkeypatch):
 
 
 def _build_picks_with_qb1_rounds(qb1_round_by_team: dict, n_rounds: int = 6) -> list:
-    """228-pick-shaped (well, n_rounds*12) log where team `pos_slot`'s FIRST
-    QB pick lands at round `qb1_round_by_team[pos_slot]` (every other pick is
-    a filler RB) -- lets a test control exactly what the league-wide QB1
-    audit sees, independent of the batch's own (our-seat-only) qb1_round_mean
-    metric."""
+    """n_rounds*12-pick log where team `pos_slot`'s FIRST QB pick lands at round
+    `qb1_round_by_team[pos_slot]` (every other pick is a filler RB)."""
     picks = []
     overall = 0
     for rnd in range(1, n_rounds + 1):
@@ -530,28 +461,27 @@ def _build_picks_with_qb1_rounds(qb1_round_by_team: dict, n_rounds: int = 6) -> 
 def _seed_batch(
     db,
     scenario,
-    qb_plan_idx,
-    defk_round,
-    tier_break,
     cell_idx,
     all_play_pct,
+    qb_by_round=(2, 5, 14),
+    defk_round=14,
+    grid="anchor",
+    playoff_make_pct=0.90,
     qb1_round_mean=2.0,
     def_round_mean=14.0,
     degraded=False,
     top3_rate=0.25,
-    grid="main",
     qb1_round_by_team=None,
 ):
     strategy = {
         "scenario": scenario,
-        "qb_by_round": [1, 4, 9],
+        "qb_by_round": list(qb_by_round),
         "qb_not_before": [1, 1, 1],
         "defk_round": defk_round,
-        "caps": [["QB", 4], ["RB", 9], ["WR", 9], ["TE", 3], ["K", 2], ["DEF", 2]],
-        "tier_break_bonus": tier_break,
+        "caps": [["QB", 4], ["RB", 9], ["WR", 9], ["TE", 2], ["K", 1], ["DEF", 1]],
+        "tier_break_bonus": 0.0,
         "cell_idx": cell_idx,
         "grid": grid,
-        "qb_plan_idx": qb_plan_idx,
     }
     data_vintage = {
         "adp_snapshot_id": 42,
@@ -584,6 +514,8 @@ def _seed_batch(
         for metric, val in (
             ("all_play_pct", all_play_pct),
             ("all_play_se", 0.01),
+            ("playoff_make_pct", playoff_make_pct),
+            ("playoff_make_se", 0.015),
             ("top3_rate", top3_rate),
             ("qb1_round_mean", qb1_round_mean),
             ("def_round_mean", def_round_mean),
@@ -630,12 +562,8 @@ def _seed_batch(
 
 @pytest.fixture
 def stub_audit(monkeypatch):
-    """The Task 4 assumption audit builds the live pool/priors/history off the
-    connection and draws a uniform opponent sample -- data the seeded test DB
-    doesn't carry. The render_report integration tests below assert on OTHER
-    sections (vintage/qb-policy/defk/worst), so they stub the audit to a fixed
-    (lines, ok=True) pair; the audit's own logic is unit-tested separately in
-    `test_assumption_audit_lines_*`."""
+    """Stub the live-DB assumption audit to a fixed (lines, ok=True) pair; its
+    own logic is unit-tested separately in `test_assumption_audit_lines_*`."""
     monkeypatch.setattr(
         sim_report,
         "_run_assumption_audit",
@@ -644,80 +572,43 @@ def stub_audit(monkeypatch):
 
 
 def test_render_report_includes_data_vintage_header(db, stub_audit):
-    _seed_batch(
-        db,
-        "qb_hoard_12",
-        qb_plan_idx=0,
-        defk_round=14,
-        tier_break=0.0,
-        cell_idx=0,
-        all_play_pct=0.55,
-    )
+    _seed_batch(db, "qb_hoard_12", cell_idx=0, all_play_pct=0.55)
     report, _ok = sim_report.render_report(db, BATCH_DATE)
     assert "data vintage" in report.lower() or "data-vintage" in report.lower()
     assert "42" in report  # snapshot id
     assert "deadbeef" in report  # git sha
 
 
-def test_render_report_includes_qb_policy_table(db, stub_audit):
+def test_render_report_strategy_grid_surfaces_playoff_make(db, stub_audit):
+    # anchor + one qb_timing cell -> the grid table shows playoff-make% and a
+    # delta-vs-anchor column.
     _seed_batch(
         db,
         "qb_hoard_12",
-        qb_plan_idx=0,
-        defk_round=14,
-        tier_break=0.0,
-        cell_idx=48,
-        all_play_pct=0.55,
-        grid="qb_subgrid",
-    )
-    _seed_batch(
-        db,
-        "qb_hoard_0",
-        qb_plan_idx=0,
-        defk_round=14,
-        tier_break=0.0,
-        cell_idx=49,
-        all_play_pct=0.50,
-        grid="qb_subgrid",
-    )
-    report, _ok = sim_report.render_report(db, BATCH_DATE)
-    assert "QB" in report
-    assert "0.55" in report or "55.0" in report
-
-
-def test_render_report_defk_table_by_round(db, stub_audit):
-    _seed_batch(
-        db,
-        "qb_hoard_12",
-        qb_plan_idx=0,
-        defk_round=8,
-        tier_break=0.0,
         cell_idx=0,
-        all_play_pct=0.50,
+        all_play_pct=0.73,
+        grid="anchor",
+        qb_by_round=(2, 5, 14),
+        playoff_make_pct=0.98,
     )
     _seed_batch(
         db,
         "qb_hoard_12",
-        qb_plan_idx=0,
-        defk_round=18,
-        tier_break=0.0,
         cell_idx=1,
-        all_play_pct=0.53,
+        all_play_pct=0.67,
+        grid="qb_timing",
+        qb_by_round=(1, 4, 9),
+        playoff_make_pct=0.95,
     )
     report, _ok = sim_report.render_report(db, BATCH_DATE)
-    assert "defk_round" in report.lower() or "def/k" in report.lower()
+    assert "sensitivity grid" in report.lower()
+    assert "playoff-make" in report.lower()
+    assert "anchor" in report.lower()
+    assert "vs anchor" in report.lower()  # delta column present
 
 
 def test_render_report_worst_drafts_narrative_present(db, stub_audit):
-    _seed_batch(
-        db,
-        "qb_hoard_12",
-        qb_plan_idx=0,
-        defk_round=14,
-        tier_break=0.0,
-        cell_idx=0,
-        all_play_pct=0.30,
-    )
+    _seed_batch(db, "qb_hoard_12", cell_idx=0, all_play_pct=0.30)
     report, _ok = sim_report.render_report(db, BATCH_DATE)
     assert "worst" in report.lower()
 
@@ -773,22 +664,8 @@ def test_assumption_audit_pos_share_table_uses_band_averaged_priors():
 def test_render_report_exits_nonzero_when_batch_degraded(
     db, tmp_path, monkeypatch, stub_audit
 ):
-    # `main_for_date` writes reports/sim-farm-<date>.md to disk. Never let a
-    # test touch the real repo `reports/` dir -- redirect REPORTS_DIR to an
-    # ephemeral tmp_path so this run can't clobber a real generated report
-    # (see Task 12 review finding: tests were overwriting the on-disk
-    # sim-farm-2026-07-10.md with fixture data, e.g. snapshot #42/deadbeef).
     monkeypatch.setattr(sim_report, "REPORTS_DIR", tmp_path)
-    _seed_batch(
-        db,
-        "qb_hoard_12",
-        qb_plan_idx=0,
-        defk_round=14,
-        tier_break=0.0,
-        cell_idx=0,
-        all_play_pct=0.50,
-        degraded=True,
-    )
+    _seed_batch(db, "qb_hoard_12", cell_idx=0, all_play_pct=0.50, degraded=True)
     with pytest.raises(SystemExit):
         sim_report.main_for_date(db, BATCH_DATE)
 
@@ -796,47 +673,22 @@ def test_render_report_exits_nonzero_when_batch_degraded(
 def test_render_report_exits_zero_when_no_batch_degraded(
     db, tmp_path, monkeypatch, stub_audit
 ):
-    # See comment in test_render_report_exits_nonzero_when_batch_degraded above:
-    # redirect REPORTS_DIR so this test can't overwrite the real report file.
     monkeypatch.setattr(sim_report, "REPORTS_DIR", tmp_path)
-    _seed_batch(
-        db,
-        "qb_hoard_12",
-        qb_plan_idx=0,
-        defk_round=14,
-        tier_break=0.0,
-        cell_idx=0,
-        all_play_pct=0.50,
-        degraded=False,
-    )
-    # Should not raise.
+    _seed_batch(db, "qb_hoard_12", cell_idx=0, all_play_pct=0.50, degraded=False)
     out = sim_report.main_for_date(db, BATCH_DATE)
     assert out.parent == tmp_path
 
 
 def test_main_for_date_exits_nonzero_on_audit_regression(db, tmp_path, monkeypatch):
-    # The audit is now a HARD regression check: a failing QB1 audit must make
-    # main_for_date exit nonzero even when no batch is degraded. Stub the audit
-    # to fail; the report is still written (evidence) before the exit.
     monkeypatch.setattr(sim_report, "REPORTS_DIR", tmp_path)
     monkeypatch.setattr(
         sim_report,
         "_run_assumption_audit",
         lambda conn, date: (["## Assumption audit", "- REGRESSION: ..."], False),
     )
-    _seed_batch(
-        db,
-        "qb_hoard_12",
-        qb_plan_idx=0,
-        defk_round=14,
-        tier_break=0.0,
-        cell_idx=0,
-        all_play_pct=0.50,
-        degraded=False,
-    )
+    _seed_batch(db, "qb_hoard_12", cell_idx=0, all_play_pct=0.50, degraded=False)
     with pytest.raises(SystemExit, match="regression"):
         sim_report.main_for_date(db, BATCH_DATE)
-    # report written before the exit
     assert (tmp_path / f"sim-farm-{BATCH_DATE.isoformat()}.md").exists()
 
 
