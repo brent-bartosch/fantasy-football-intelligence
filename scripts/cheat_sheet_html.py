@@ -16,7 +16,10 @@ from ffi.breakout import attach, load_notes
 from ffi.db import connect
 from ffi.sim.pool import build_pool
 
-DEPTH = {"QB": 30, "RB": 55, "WR": 60, "TE": 26, "DEF": 16, "K": 15}
+# WR extended to 70 (2026-08-17): full-PPR WR is deep and flat, so the useful
+# names run later than 60 -- and a breakout note on a WR below the cutoff would
+# fail the build rather than silently vanish (Tre Harris sits at WR66).
+DEPTH = {"QB": 30, "RB": 55, "WR": 70, "TE": 26, "DEF": 16, "K": 15}
 ORDER = ["RB", "WR", "QB", "TE", "DEF", "K"]  # draft-priority order, left->right
 
 PLAYBOOK = (

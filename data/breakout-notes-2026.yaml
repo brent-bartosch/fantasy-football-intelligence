@@ -4,9 +4,14 @@
 # scripts/confirm_signals.py (capped, human-confirmed). Spec:
 # docs/superpowers/specs/2026-07-24-breakout-notes-design.md
 #
-# Content vintage: research pass 1 (2026-07-24), docs/research/2026-07-24-breakout-candidates.md.
-# REFRESH DUE before the ~Aug 22 freeze -- theses below carry July ADP and
-# pre-camp status. Every `kill` is a checkpoint resolvable before the Aug 29 draft.
+# Content vintage: 2026-08-17. Two independent passes:
+#   pass 1  docs/research/2026-07-24-breakout-candidates.md          (pre-camp)
+#   pass 2  docs/research/2026-08-17-breakout-candidates-independent.md (camp + preseason wk1,
+#           formed WITHOUT reading pass 1, so agreement between them is real corroboration)
+# Pass 2's roster claims were cross-checked against our own Sleeper ingest.
+# Next checkpoint: preseason week 2 runs 8/20-8/23 -- the last big information
+# event before the Aug 29 draft. Re-check every `kill` after it.
+# Every `kill` is a condition resolvable before the draft.
 #
 # name  : must match the pool exactly (name + pos), else the build fails loud
 # pos   : QB | RB | WR | TE
@@ -22,14 +27,14 @@
   pos: RB
   category: post-injury
   thesis: >-
-    Surgeon-cleared after two ACL tears in 13 months, now taking the first first-team
-    camp reps of his career. CAR let Dowdle walk, drafted zero RBs. Our proj of 45
-    still prices him injured -- the biggest fact-vs-board gap.
+    Cleared after two ACL tears in 13 months; started the preseason opener in every
+    situation but 3rd-and-long, Hubbard out (hamstring). CAUTION: edge gone -- board
+    caught up (proj 45 -> 256), flippening is consensus.
   kill: >-
-    Any PUP designation or camp setback. Also check whether our projection source
-    has updated him off 45 -- if not, the board stays wrong, not just cheap.
+    Already priced: Underdog ~79, Sleeper 2QB ~129 vs our stale 194. Do not pay a
+    premium expecting a discount. Hubbard returning healthy re-muddies it.
   sources:
-    - https://www.espn.com/fantasy/football/story/_/page/FFSleepBustBreak26-49030808/fantasy-football-2026-rankings-nfl-sleepers-breakouts-busts
+    - https://www.panthers.com/news/jonathon-brooks-plays-into-the-second-quarter-in-his-preseason-debut-chuba-hubbard
 
 - name: Tre Harris
   pos: WR
@@ -72,31 +77,120 @@
   sources:
     - https://www.si.com/fantasy/2026-football-sleepers-breakouts-bargains-all-32-nfl-teams
 
-- name: Chigoziem Okonkwo
-  pos: TE
-  category: situation
-  thesis: >-
-    Signed 3yr/$27M to inherit the Zach Ertz role -- 91 targets from Jayden Daniels in
-    2024. Deebo also gone: 171 vacated targets from WAS's top two 2025 earners, with no
-    clear WR2 on the roster. We start 1 TE but roster 2.
-  kill: >-
-    The second-in-team-targets line is one outlet's model, not an established role.
-    Confirm with actual camp usage alongside Daniels.
-  sources:
-    - https://www.espn.com/fantasy/football/story/_/id/49401787/espn-nfl-fantasy-football-advice-players-benefit-vacated-targets
+# REMOVED 2026-08-17 — Chig Okonkwo (TE WAS). Pass-1 thesis was "171 vacated targets,
+# no clear WR2 on the roster." Stefon Diggs signed with Washington on 8/7 (confirmed in
+# our own Sleeper ingest: Diggs team = WAS). Okonkwo now queues behind McLaurin AND
+# Diggs. The thesis is factually dead, not merely weakened.
 
 - name: George Kittle
   pos: TE
   category: post-injury
   thesis: >-
-    Jan 11 Achilles rupture, but a clean high-blood-flow tear doctors called best-case.
-    TE2 in PPG in 2025, reportedly ahead of schedule, targeting Week 1 -- priced ~TE9-11
-    against a historical round 3-5 cost.
+    KILL CONDITION FIRED, SOURCES CONFLICT. Jan 11 Achilles rupture; TE2 in PPG in 2025.
+    Our Sleeper ingest lists him PUP as of 8/17; pass-2 research read August reporting
+    as "high confidence Week 1, fairly priced."
   kill: >-
-    THE checkpoint: PUP vs practicing when camp opens. Schefter (Jul 22) says Week 1
-    "isn't a given." If PUP, reprice hard -- this is redraft, not dynasty.
+    Resolve this before drafting -- our machine-read feed disagrees with the article
+    read. Check SF's official Week 1 designation, not a fantasy site.
   sources:
     - https://www.rotoballer.com/player-news/george-kittle-2026-fantasy-football-outlook-recovery-from-torn-achilles-offers-draft-discount-but-clouds-prospects/1875663
+
+# -------------------------------------------- Tier A (added 08-17, pass 2)
+- name: Matthew Golden
+  pos: WR
+  category: situation
+  thesis: >-
+    GB cleared its WR room (Doubs to NE, Wicks to PHI) and Golden opened the preseason
+    starting at X in 2-WR sets with Watson at Z -- Reed only appeared in 3-WR. Bigger
+    snap floor than both, cheapest price of the three.
+  kill: >-
+    LaFleur's target distribution is historically flat; Kraft is off PUP and back as a
+    target competitor; Golden missed camp time with a toe issue (returned 8/11).
+  sources:
+    - https://www.fantasypros.com/2026/08/fantasy-football-20-nfl-preseason-week-1-takeaways-2026/
+    - https://www.packers.com/news/matthew-golden-kept-the-big-plays-coming-on-family-night-aug-8-2026
+
+- name: Josh Downs
+  pos: WR
+  category: situation
+  thesis: >-
+    Pittman gone from IND, Pierce coming off ankle/heel surgery. Downs was capped at a
+    58.7% snap share in 2025 with only 65 boundary routes; the Colts say he moves outside
+    into more 2-WR sets. Our scoring pays this twice.
+  kill: >-
+    Live reporting conflict on Alec Pierce's Week 1 status (DraftSharks 8/15 says out,
+    Yahoo 8/16 says on track). Tyler Warren competes for targets. Partially priced already.
+  sources:
+    - https://www.colts.com/news/josh-downs-wide-receiver-fantasy-football-usage-snap-counts-targets-2026-season
+    - https://www.espn.com/nfl/story/_/id/49540063/indianapolis-colts-josh-downs-wide-receiver-outlook
+
+- name: Wan'Dale Robinson
+  pos: WR
+  category: situation
+  thesis: >-
+    Signed 4yr/$70M to reunite with Brian Daboll, now TEN's OC; opened preseason in the
+    slot with the ones. Led all WRs in slot receiving yards (622) in 2025. Format
+    arbitrage -- on no national breakout list.
+  kill: >-
+    Entirely a QB risk: Cam Ward's preseason debut was bad (5-of-12, 57 yds, grounding).
+    Carnell Tate was the No. 4 overall pick and will command volume.
+  sources:
+    - https://establishtherun.com/fantasy-fallout-wandale-robinson-signs-with-titans/
+    - https://www.rotowire.com/football/nfl-depth-charts/tennessee-titans-depth-chart-ten
+
+- name: Rhamondre Stevenson
+  pos: RB
+  category: role-path
+  thesis: >-
+    ADP inversion: August reports have Stevenson as NE's lead back while Henderson
+    struggles with vision and patience -- yet Henderson goes ~14 picks earlier. McDaniels
+    is OC; Stevenson is his only holdover skill player.
+  kill: >-
+    "Vision and patience" is soft scouting talk and August backfield consensus is often
+    wrong by week 4. Henderson is the better receiver. Stevenson has fumbled.
+  sources:
+    - https://www.draftsharks.com/article/fantasy-football-risers-and-fallers
+    - https://www.patspulpit.com/new-england-patriots-training-camp/130511/running-back-preview-2026-rhamondre-stevenson-treveyon-henderson
+
+- name: Tyjae Spears
+  pos: RB
+  category: role-path
+  thesis: >-
+    Out-snapped Pollard with the TEN starters in the preseason opener (12-13 vs 9),
+    rotating by five-play stints rather than by situation -- a timeshare, not a backup
+    role. Pollard costs ~80 picks more.
+  kill: >-
+    One preseason game is thin. Rookie Singleton is the only back signed past 2026 and
+    could make it a three-way split that helps nobody. Spears has real injury history.
+  sources:
+    - https://www.fantasypros.com/2026/08/fantasy-football-20-nfl-preseason-week-1-takeaways-2026/
+
+- name: Jalen Coker
+  pos: WR
+  category: role-path
+  thesis: >-
+    Earned a three-year extension as CAR's WR2 -- a transaction signal, not camp chatter.
+    Started in 2-WR sets in the preseason opener while McMillan played mostly slot,
+    leaving Coker the boundary.
+  kill: >-
+    Bryce Young is the market's ~25th QB and Carolina's pass volume may be low. The WR3
+    battle behind McMillan suggests an unsettled room.
+  sources:
+    - https://sports.yahoo.com/articles/2026-fantasy-football-adp-risers-025317131.html
+
+- name: Patrick Mahomes
+  pos: QB
+  category: post-injury
+  thesis: >-
+    The one QB discount that is NOT a 1QB-ADP illusion -- it is within-position. Fully
+    cleared ~8 months after ACL/LCL surgery, full participant, held out of preseason
+    purely as precaution, yet priced around QB13.
+  kill: >-
+    Whether he takes any preseason week 3 snaps. Verify against our OWN 2QB board before
+    calling it value -- national QB "discounts" usually evaporate in our room.
+  sources:
+    - https://www.nfl.com/news/chiefs-qb-patrick-mahomes-knee-fully-cleared-to-participate-in-training-camp
+    - https://www.cbssports.com/fantasy/football/news/chiefs-patrick-mahomes-eyeing-week-1-return-in-2026
 
 # ---------------------------------------------------------------- Tier B
 - name: Bhayshul Tuten
