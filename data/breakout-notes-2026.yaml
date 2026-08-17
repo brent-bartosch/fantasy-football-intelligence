@@ -1,0 +1,179 @@
+# Curated breakout-potential notes -> HTML cheat sheet badges.
+#
+# ANNOTATIONS ONLY. Nothing here moves proj/VORP/tier. To move a number, use
+# scripts/confirm_signals.py (capped, human-confirmed). Spec:
+# docs/superpowers/specs/2026-07-24-breakout-notes-design.md
+#
+# Content vintage: research pass 1 (2026-07-24), docs/research/2026-07-24-breakout-candidates.md.
+# REFRESH DUE before the ~Aug 22 freeze -- theses below carry July ADP and
+# pre-camp status. Every `kill` is a checkpoint resolvable before the Aug 29 draft.
+#
+# name  : must match the pool exactly (name + pos), else the build fails loud
+# pos   : QB | RB | WR | TE
+# category: situation | post-injury | year-n-leap | role-path
+# thesis: <=220 chars, the mechanism + its evidence
+# kill  : <=180 chars, what would falsify it before the draft
+#
+# Tier A below = our board is BLIND to the thesis (the layer's real payload).
+# Tier B = our board already likes the player; the note is the kill condition.
+
+# ---------------------------------------------------------------- Tier A
+- name: Jonathon Brooks
+  pos: RB
+  category: post-injury
+  thesis: >-
+    Surgeon-cleared after two ACL tears in 13 months, now taking the first first-team
+    camp reps of his career. CAR let Dowdle walk, drafted zero RBs. Our proj of 45
+    still prices him injured -- the biggest fact-vs-board gap.
+  kill: >-
+    Any PUP designation or camp setback. Also check whether our projection source
+    has updated him off 45 -- if not, the board stays wrong, not just cheap.
+  sources:
+    - https://www.espn.com/fantasy/football/story/_/page/FFSleepBustBreak26-49030808/fantasy-football-2026-rankings-nfl-sleepers-breakouts-busts
+
+- name: Tre Harris
+  pos: WR
+  category: situation
+  thesis: >-
+    Keenan Allen's 122 targets (15 red-zone) vacated; Harbaugh publicly names Harris
+    a top-three receiver, locked into a boundary starting role in year 2. McConkey
+    absorbs slot work only. Near-free at our ADP 205.
+  kill: >-
+    Keenan Allen re-signing -- he is an unsigned FA and GM Hortiz says the door "is
+    not closed." Check the week of the draft. National ADP already 190s -> 160s.
+  sources:
+    - https://www.si.com/fantasy/2026-football-sleepers-breakouts-bargains-all-32-nfl-teams
+    - https://sports.yahoo.com/fantasy/article/fantasy-football-using-vacated-targets-to-identify-wrs-and-tes-who-should-see-an-increase-or-decrease-in-value-for-2026-144632341.html
+
+- name: Jayden Higgins
+  pos: WR
+  category: year-n-leap
+  thesis: >-
+    34th overall pick 2025 (9.63 RAS), 6 TDs as a rookie -- matching Nico Collins.
+    Christian Kirk signed to SF and Tank Dell has no return timetable, leaving Higgins
+    the locked WR2 beside an injury-prone Collins.
+  kill: >-
+    Dell is reportedly "crushing rehab" and could return mid-season to reclaim targets.
+    Confirm via camp target share.
+  sources:
+    - https://www.espn.com/fantasy/football/story/_/page/FFSleepBustBreak26-49030808/fantasy-football-2026-rankings-nfl-sleepers-breakouts-busts
+    - https://www.si.com/fantasy/2026-football-sleepers-breakouts-bargains-all-32-nfl-teams
+
+- name: Xavier Worthy
+  pos: WR
+  category: post-injury
+  thesis: >-
+    2025 wrecked by a Week 1 torn labrum, repaired Jan 2026. Entered late-July camp
+    with no restrictions, connecting deep with Mahomes. Uncontested No. 2 behind Rice --
+    KC's only WR addition was a 5th-round rookie.
+  kill: >-
+    Spring reports said "close to fully recovered" rather than fully; any shoulder
+    restriction resurfacing in camp kills the discount thesis.
+  sources:
+    - https://www.si.com/fantasy/2026-football-sleepers-breakouts-bargains-all-32-nfl-teams
+
+- name: Chigoziem Okonkwo
+  pos: TE
+  category: situation
+  thesis: >-
+    Signed 3yr/$27M to inherit the Zach Ertz role -- 91 targets from Jayden Daniels in
+    2024. Deebo also gone: 171 vacated targets from WAS's top two 2025 earners, with no
+    clear WR2 on the roster. We start 1 TE but roster 2.
+  kill: >-
+    The second-in-team-targets line is one outlet's model, not an established role.
+    Confirm with actual camp usage alongside Daniels.
+  sources:
+    - https://www.espn.com/fantasy/football/story/_/id/49401787/espn-nfl-fantasy-football-advice-players-benefit-vacated-targets
+
+- name: George Kittle
+  pos: TE
+  category: post-injury
+  thesis: >-
+    Jan 11 Achilles rupture, but a clean high-blood-flow tear doctors called best-case.
+    TE2 in PPG in 2025, reportedly ahead of schedule, targeting Week 1 -- priced ~TE9-11
+    against a historical round 3-5 cost.
+  kill: >-
+    THE checkpoint: PUP vs practicing when camp opens. Schefter (Jul 22) says Week 1
+    "isn't a given." If PUP, reprice hard -- this is redraft, not dynasty.
+  sources:
+    - https://www.rotoballer.com/player-news/george-kittle-2026-fantasy-football-outlook-recovery-from-torn-achilles-offers-draft-discount-but-clouds-prospects/1875663
+
+# ---------------------------------------------------------------- Tier B
+- name: Bhayshul Tuten
+  pos: RB
+  category: situation
+  thesis: >-
+    Etienne to NO vacates 296 touches; took every first-team offseason snap; elite
+    rookie efficiency (7 TD on 93 touches, 31% missed-tackles-forced, 2nd among RBs).
+    Board already has him t1 -- the note is the kill condition.
+  kill: >-
+    Chris Rodriguez Jr. (2yr/$10M) winning early-down work; LeQuint Allen takes passing
+    downs. Beat writers call this a live camp battle -- watch preseason snap counts.
+  sources:
+    - https://www.espn.com/fantasy/football/story/_/page/FFSleepBustBreak26-49030808/fantasy-football-2026-rankings-nfl-sleepers-breakouts-busts
+    - https://www.si.com/fantasy/2026-football-sleepers-breakouts-bargains-all-32-nfl-teams
+
+- name: Cam Skattebo
+  pos: RB
+  category: post-injury
+  thesis: >-
+    An RB10-in-PPG rookie stretch (Wks 1-8) buried by a gruesome ankle -- dislocation
+    plus fractured fibula plus ruptured deltoid ligament. Took live 11-on-11 offseason
+    reps; "Week 1, I'll be ready to go."
+  kill: >-
+    Anything short of full-contact participation in August. Injury severity is the real
+    tail risk at this price, and analysts flag it even while confirming the facts.
+  sources:
+    - https://sports.yahoo.com/fantasy/article/from-malik-nabers-to-patrick-mahomes-here-are-the-injuries-you-need-to-note-for-2026-fantasy-football-152947326.html
+
+- name: Emeka Egbuka
+  pos: WR
+  category: year-n-leap
+  thesis: >-
+    Full-season rookie line masks the split: 20.1 PPG over five healthy games vs 7.8
+    after hip/groin/hamstring trouble, with target share holding (23.1%, 28.9%
+    first-read) through the fade. Evans' targets vacated on top.
+  kill: >-
+    Soft-tissue recurrence in camp. Caveat on the thesis: the late-season collapse was
+    partly offense-wide efficiency, not purely health.
+  sources:
+    - https://www.fantasylife.com/articles/fantasy/keeping-tabs-of-injury-recoveries-impacting-fantasy-football
+
+- name: Christian Watson
+  pos: WR
+  category: situation
+  thesis: >-
+    Doubs gone and Wicks traded vacate ~131 targets with no competition added; Watson
+    held a 34% air-yardage share and was GB's top scoring WR after his 2025 return.
+    Weakest thesis here -- verification split 2-1.
+  kill: >-
+    Reed projects the larger raw target share and Kraft competes for red-zone work.
+    ADP climbing 80s -> ~63 nationally: the edge is eroding in real time.
+  sources:
+    - https://sports.yahoo.com/fantasy/article/fantasy-football-using-vacated-targets-to-identify-wrs-and-tes-who-should-see-an-increase-or-decrease-in-value-for-2026-144632341.html
+
+- name: Kyle Pitts
+  pos: TE
+  category: situation
+  thesis: >-
+    New HC Kevin Stefanski's offenses produced a top-8 PPG PPR tight end in each of the
+    last four seasons (Njoku x3, rookie Fannin 2025). Pitts was franchise-tagged then
+    extended 3yr/$54M, cementing the role.
+  kill: >-
+    Semi-obvious: he is coming off his best season, and the streak uses per-game not
+    total ranks. Play-calling in Cleveland was delegated to Rees, now ATL's OC.
+  sources:
+    - https://www.fantasylife.com/articles/fantasy/2026-nfl-coaching-changes-klint-kubiak-john-harbaugh-and-fantasy-football-impact-of-new-play-callers
+
+- name: Harold Fannin
+  pos: TE
+  category: situation
+  thesis: >-
+    New HC Todd Monken's 2023-25 Baltimore offenses led the NFL in TE touchdowns (38, by
+    a margin of 9) and ranked 2nd in TE PPR points, layered on Fannin's own TE8-in-PPG
+    rookie season (72-731-6).
+  kill: >-
+    Volume check: Ravens TE targets ranked only 11th, so Monken's edge is TD/yardage
+    efficiency, not raw volume. Rookie pedigree makes him semi-obvious already.
+  sources:
+    - https://www.fantasylife.com/articles/fantasy/2026-nfl-coaching-changes-klint-kubiak-john-harbaugh-and-fantasy-football-impact-of-new-play-callers

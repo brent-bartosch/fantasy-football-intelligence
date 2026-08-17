@@ -12,6 +12,7 @@ import datetime
 import html
 import json
 
+from ffi.breakout import attach, load_notes
 from ffi.db import connect
 from ffi.sim.pool import build_pool
 
@@ -25,14 +26,18 @@ PLAYBOOK = (
 )
 
 
-def build(pool):
+def build(pool, notes_by_ref=None):
+    """Column data for the page. `notes_by_ref` is the curated breakout layer
+    (annotations only -- it never changes proj/vorp/tier/ordering)."""
+    notes_by_ref = notes_by_ref or {}
     cols = {}
     for pos in ORDER:
         ps = sorted(
             (p for p in pool if p.position == pos), key=lambda p: -p.proj_points
         )
-        cols[pos] = [
-            {
+        rows = []
+        for p in ps[: DEPTH[pos]]:
+            row = {
                 "id": p.ref,
                 "n": p.name,
                 "proj": round(p.proj_points),
@@ -40,8 +45,16 @@ def build(pool):
                 "t": p.tier,
                 "adp": round(p.adp) if p.adp is not None else None,
             }
-            for p in ps[: DEPTH[pos]]
-        ]
+            note = notes_by_ref.get(p.ref)
+            if note is not None:
+                row["bo"] = {
+                    "c": note.category,
+                    "b": note.badge,
+                    "th": note.thesis,
+                    "k": note.kill,
+                }
+            rows.append(row)
+        cols[pos] = rows
     return cols
 
 
@@ -65,16 +78,28 @@ button{{background:var(--card);border:1px solid #30363d;color:var(--ink);padding
 .col{{background:var(--card);border-radius:8px;min-width:210px;flex:1;overflow:hidden}}
 .col h2{{margin:0;font-size:12px;padding:6px 8px;background:#11161d;position:sticky;top:0}}
 .col .list{{max-height:82vh;overflow:auto}}
-.row{{display:flex;align-items:center;gap:6px;padding:3px 8px;border-left:3px solid var(--t6);cursor:pointer}}
+.row{{display:flex;align-items:center;gap:4px;padding:3px 6px;border-left:3px solid var(--t6);cursor:pointer}}
 .row:hover{{background:#222b36}}
 .row.d{{opacity:.32;text-decoration:line-through}}
-.rk{{color:var(--dim);width:20px;text-align:right;font-variant-numeric:tabular-nums}}
+.rk{{color:var(--dim);width:17px;text-align:right;font-variant-numeric:tabular-nums}}
 .nm{{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
 .num{{color:var(--dim);font-size:11px;font-variant-numeric:tabular-nums}}
 .adp{{width:34px;text-align:right}}
 .t1{{border-left-color:var(--t1)}}.t2{{border-left-color:var(--t2)}}.t3{{border-left-color:var(--t3)}}
 .t4{{border-left-color:var(--t4)}}.t5{{border-left-color:var(--t5)}}.t6{{border-left-color:var(--t6)}}
 .hi{{background:#243b53}}
+/* breakout notes: annotations only — badges never change ordering or numbers */
+.bo{{flex:none;width:12px;height:12px;line-height:12px;border-radius:2px;font-size:9px;
+font-weight:700;text-align:center;color:#0b0f14;cursor:pointer}}
+.bo-situation{{background:#d29922}}.bo-post-injury{{background:#f85149}}
+.bo-year-n-leap{{background:#3fb950}}.bo-role-path{{background:#58a6ff}}
+.note{{padding:5px 8px 7px 26px;background:#141b24;border-left:3px solid #30363d;font-size:11px;color:#c9d1d9}}
+.note b{{color:#8b98a5;font-weight:600}}
+.note .kill{{color:#d29922;display:block;margin-top:3px}}
+button.on{{background:#243b53;border-color:#58a6ff}}
+.legend{{color:var(--dim);font-size:10px;margin-top:4px}}
+.legend span{{margin-right:8px}}
+.legend i{{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:3px}}
 </style></head><body>
 <header>
 <h1>Draft Cheat Sheet — {date} <span class=cnt>· our scoring · incompletion-fixed</span></h1>
@@ -82,16 +107,36 @@ button{{background:var(--card);border:1px solid #30363d;color:var(--ink);padding
 <div class=bar>
 <input id=q placeholder="type a drafted player → Enter to cross off (fuzzy)">
 <button onclick=reset()>Reset</button>
+<button id=bof onclick=togBo()>★ breakouts</button>
 <span class=cnt id=cnt></span>
+</div>
+<div class=legend>
+<span><i style="background:#d29922"></i>S situation</span>
+<span><i style="background:#f85149"></i>I post-injury</span>
+<span><i style="background:#3fb950"></i>Y year-2/3 leap</span>
+<span><i style="background:#58a6ff"></i>R role path</span>
+<span>· click a badge for the thesis + what kills it</span>
 </div></header>
 <div class=cols id=cols></div>
 <script>
 const DATA={data}, ORDER={order};
 const drafted=new Set(JSON.parse(localStorage.getItem('drafted_{date}')||'[]'));
+const openNotes=new Set();      // which theses are expanded (view state, not persisted)
+let boOnly=false;               // ★ breakouts filter
 function save(){{localStorage.setItem('drafted_{date}',JSON.stringify([...drafted]));upd();}}
 function reset(){{drafted.clear();save();render();}}
 function upd(){{document.getElementById('cnt').textContent=drafted.size+' off the board';}}
 function toggle(id){{drafted.has(id)?drafted.delete(id):drafted.add(id);save();render();}}
+function esc(s){{return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}}
+function togNote(ev,id){{
+ ev.stopPropagation();           // never cross a player off just by reading their note
+ openNotes.has(id)?openNotes.delete(id):openNotes.add(id);render();
+}}
+function togBo(){{
+ boOnly=!boOnly;
+ document.getElementById('bof').classList.toggle('on',boOnly);
+ render();
+}}
 function render(){{
  const c=document.getElementById('cols');c.innerHTML='';
  for(const pos of ORDER){{
@@ -99,14 +144,21 @@ function render(){{
   let h='<h2>'+pos+'</h2><div class=list>';
   let rk=0;
   for(const p of DATA[pos]){{
-   if(!drafted.has(p.id))rk++;
+   if(!drafted.has(p.id))rk++;      // rank counts the true board, not the filtered view
+   if(boOnly&&!p.bo)continue;
    const d=drafted.has(p.id)?' d':'';
    const adp=p.adp==null?'—':p.adp;
+   const badge=p.bo?'<span class="bo bo-'+p.bo.c+'" title="'+esc(p.bo.c)+
+     '" onclick="togNote(event,\\''+p.id+'\\')">'+p.bo.b+'</span>':'';
    h+='<div class="row t'+p.t+d+'" data-n="'+p.n.toLowerCase()+'" onclick="toggle(\\''+p.id+'\\')">'+
       '<span class=rk>'+(drafted.has(p.id)?'·':rk)+'</span>'+
+      badge+
       '<span class=nm>'+p.n+'</span>'+
       '<span class="num">'+p.proj+'</span>'+
       '<span class="num adp">'+adp+'</span></div>';
+   if(p.bo&&openNotes.has(p.id))
+     h+='<div class=note>'+esc(p.bo.th)+
+        '<span class=kill><b>kills it:</b> '+esc(p.bo.k)+'</span></div>';
   }}
   col.innerHTML=h+'</div>';c.appendChild(col);
  }}
@@ -131,17 +183,23 @@ q.addEventListener('keydown',e=>{{
 def main():
     conn = connect()
     pool = build_pool(conn, "qb_hoard_12")
+    # Both calls fail loud (BreakoutNotesError) rather than dropping a note:
+    # a curated thesis that silently never renders is worse than no layer at all.
+    notes = attach(load_notes(), pool, DEPTH)
     date = datetime.date.today().isoformat()
     page = PAGE.format(
         date=date,
         play=html.escape(PLAYBOOK),
-        data=json.dumps(build(pool)),
+        data=json.dumps(build(pool, notes)),
         order=json.dumps(ORDER),
     )
     path = "reports/cheat-sheet.html"
     with open(path, "w") as f:
         f.write(page)
-    print(f"wrote {path} — open in a browser; click or search to cross players off.")
+    print(
+        f"wrote {path} — open in a browser; click or search to cross players off.\n"
+        f"  breakout notes: {len(notes)} placed"
+    )
 
 
 if __name__ == "__main__":
