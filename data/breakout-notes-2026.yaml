@@ -50,19 +50,11 @@
     - https://www.si.com/fantasy/2026-football-sleepers-breakouts-bargains-all-32-nfl-teams
     - https://sports.yahoo.com/fantasy/article/fantasy-football-using-vacated-targets-to-identify-wrs-and-tes-who-should-see-an-increase-or-decrease-in-value-for-2026-144632341.html
 
-- name: Jayden Higgins
-  pos: WR
-  category: year-n-leap
-  thesis: >-
-    34th overall pick 2025 (9.63 RAS), 6 TDs as a rookie -- matching Nico Collins.
-    Christian Kirk signed to SF and Tank Dell has no return timetable, leaving Higgins
-    the locked WR2 beside an injury-prone Collins.
-  kill: >-
-    Dell is reportedly "crushing rehab" and could return mid-season to reclaim targets.
-    Confirm via camp target share.
-  sources:
-    - https://www.espn.com/fantasy/football/story/_/page/FFSleepBustBreak26-49030808/fantasy-football-2026-rankings-nfl-sleepers-breakouts-busts
-    - https://www.si.com/fantasy/2026-football-sleepers-breakouts-bargains-all-32-nfl-teams
+# REMOVED 2026-08-22 — Jayden Higgins (WR HOU). Torn ACL in Aug-18 joint practice,
+# out for the season (ESPN/NFL.com); Sleeper zeroed his projection same week and the
+# attach guard refused to build with the note in place (exactly its job). WATCH:
+# Houston's WR2 role is now genuinely vacant (Collins + rehabbing Dell + rookie Noel);
+# no verified camp evidence on the heir yet — re-check before the Aug 29 draft.
 
 - name: Xavier Worthy
   pos: WR
