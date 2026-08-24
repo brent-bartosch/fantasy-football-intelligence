@@ -160,3 +160,78 @@ def test_pool_fails_loud_on_null_tier(db):
     db.commit()
     with pytest.raises(ValueError, match="NULL tier.*Null Tier Player.*scenario"):
         build_pool(db, SCENARIO)
+
+
+# ---------------------------------------------------------------------------
+# ADP pin (data/adp-pin.json)
+# ---------------------------------------------------------------------------
+
+
+def _latest_snapshot_id(db):
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT max(snapshot_id) FROM raw.sleeper_projections WHERE week IS NULL"
+        )
+        return cur.fetchone()[0]
+
+
+def _write_pin(monkeypatch, tmp_path, payload):
+    import ffi.sim.pool as pool_mod
+
+    pin = tmp_path / "adp-pin.json"
+    pin.write_text(json.dumps(payload))
+    monkeypatch.setattr(pool_mod, "ADP_PIN_PATH", pin)
+    return pin
+
+
+def test_adp_pin_serves_the_pinned_snapshot(db, monkeypatch, tmp_path):
+    """With a pin in place, a newer (drifted) snapshot must NOT be read."""
+    _seed_full_pool(db)
+    pinned = _latest_snapshot_id(db)
+    # newer snapshot moves QB0's adp to a recognizably different value
+    _insert_snapshot(db, [_sleeper_rec("q0", "QB", 77.0)])
+    _write_pin(
+        monkeypatch,
+        tmp_path,
+        {"snapshot_id": pinned, "pinned_at": "2026-08-24", "reason": "test"},
+    )
+    pool = build_pool(db, SCENARIO)
+    qb0 = next(p for p in pool if p.ref == "q0")
+    assert qb0.adp == 1.0  # pinned snapshot's value, not the newer 77.0
+
+
+def test_unpinned_uses_latest_snapshot(db):
+    """Control for the pin test: without a pin the newest snapshot wins (and
+    here the newest snapshot is gate-clean because it reuses the full seed)."""
+    _seed_full_pool(db)
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT payload FROM raw.sleeper_projections WHERE week IS NULL "
+            "ORDER BY snapshot_id DESC LIMIT 1"
+        )
+        records = cur.fetchone()[0]
+    for rec in records:
+        if rec["player_id"] == "q0":
+            rec["stats"]["adp_2qb"] = 2.5
+    _insert_snapshot(db, records)
+    pool = build_pool(db, SCENARIO)
+    qb0 = next(p for p in pool if p.ref == "q0")
+    assert qb0.adp == 2.5
+
+
+def test_adp_pin_missing_snapshot_fails_loud(db, monkeypatch, tmp_path):
+    _seed_full_pool(db)
+    _write_pin(
+        monkeypatch,
+        tmp_path,
+        {"snapshot_id": 999999, "pinned_at": "2026-08-24", "reason": "test"},
+    )
+    with pytest.raises(ValueError, match="does not exist"):
+        build_pool(db, SCENARIO)
+
+
+def test_adp_pin_without_provenance_fails_loud(db, monkeypatch, tmp_path):
+    _seed_full_pool(db)
+    _write_pin(monkeypatch, tmp_path, {"snapshot_id": 1})
+    with pytest.raises(ValueError, match="missing required key"):
+        build_pool(db, SCENARIO)

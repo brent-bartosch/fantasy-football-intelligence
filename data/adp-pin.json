@@ -1,0 +1,5 @@
+{
+  "snapshot_id": 43,
+  "pinned_at": "2026-08-24",
+  "reason": "Sleeper adp_2qb sample flapping since 8/14: ~800-row cohort prices QBs outside our league's entire 16-season range (7 QBs in top 30 vs historical min 8, mean 13.1) and trips the 2QB sanity gate; snapshot 43 (8/22, freeze day) is the last verified-good cohort. Re-evaluate or delete after the 8/29 draft."
+}

@@ -8,6 +8,17 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "scripts"))
 
 
+@pytest.fixture(autouse=True)
+def _unpin_adp(monkeypatch, tmp_path):
+    """Tests run UNPINNED by default: `data/adp-pin.json` is live operator
+    state (tracked in git), and letting it leak into the fixture DB makes every
+    pool test fail on a snapshot_id that only exists in prod. Pin-behavior
+    tests re-point ADP_PIN_PATH themselves."""
+    import ffi.sim.pool as pool_mod
+
+    monkeypatch.setattr(pool_mod, "ADP_PIN_PATH", tmp_path / "no-adp-pin.json")
+
+
 @pytest.fixture()
 def db():
     conn = psycopg2.connect(dbname="fantasy_football_test", host="localhost")

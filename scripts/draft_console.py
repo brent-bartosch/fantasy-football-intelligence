@@ -27,6 +27,7 @@ import subprocess
 from pathlib import Path
 
 from cheat_sheet_html import ORDER  # shared column order (RB,WR,QB,TE,DEF,K)
+from ffi.breakout import attach, load_notes
 from ffi.db import connect
 from ffi.scoring.config import load_config_v1
 from ffi.sim.draft import ROUNDS, TEAMS, _avail_view, _build_sorted_pool, run_draft
@@ -64,17 +65,24 @@ PLAYBOOK = (
 # ---------------------------------------------------------------------------
 
 
-def engine_pool(pool):
+def engine_pool(pool, notes_by_ref=None):
     """Top-ENGINE_DEPTH players per position as plain dicts, sorted by proj desc
     (display order); the JS engine re-sorts each position by the draft's
-    avail_by_pos key (adp asc, None last, then proj desc)."""
+    avail_by_pos key (adp asc, None last, then proj desc).
+
+    `notes_by_ref` is the breakout-notes layer (annotations only): noted players
+    carry a `bo` field the ROW RENDERER shows as a badge. The engine ignores it
+    -- the golden-trace signature reads only id/raw, so notes can never move a
+    number or a recommendation."""
+    notes_by_ref = notes_by_ref or {}
     out = {}
     for pos in ORDER:
         ranked = sorted(
             (p for p in pool if p.position == pos), key=lambda p: -p.proj_points
         )
-        out[pos] = [
-            {
+        rows = []
+        for p in ranked[: ENGINE_DEPTH[pos]]:
+            row = {
                 "id": p.ref,
                 "n": p.name,
                 "pos": p.position,
@@ -83,8 +91,16 @@ def engine_pool(pool):
                 "t": p.tier,
                 "adp": round(p.adp) if p.adp is not None else None,
             }
-            for p in ranked[: ENGINE_DEPTH[pos]]
-        ]
+            note = notes_by_ref.get(p.ref)
+            if note is not None:
+                row["bo"] = {
+                    "c": note.category,
+                    "b": note.badge,
+                    "th": note.thesis,
+                    "k": note.kill,
+                }
+            rows.append(row)
+        out[pos] = rows
     return out
 
 
@@ -248,6 +264,11 @@ def build_page() -> tuple[str, dict]:
     table = load_starts_table(CANONICAL_TABLE_PATH)  # fail-loud on mode mismatch
     pool = build_pool(conn, "qb_hoard_12")
     baked = restricted_pool(pool)
+    # Breakout notes attach against ENGINE_DEPTH, not DISPLAY_DEPTH: the console
+    # shows DISPLAY_DEPTH *available* rows, so deeper noted players (e.g. a WR
+    # ranked 67th) scroll into view as the board empties -- any baked player can
+    # render. Fail-loud if a note can't land on a baked player.
+    notes = attach(load_notes(), baked, ENGINE_DEPTH)
     priors = build_slot_priors(conn)
     removals, golden = generate_golden(baked, priors)
 
@@ -262,7 +283,7 @@ def build_page() -> tuple[str, dict]:
     }
     baked_json = {
         "META": meta,
-        "POOL": engine_pool(baked),
+        "POOL": engine_pool(baked, notes),
         "ORDER": ORDER,
         "REMOVALS": removals,
         "GOLDEN": golden,
@@ -303,6 +324,16 @@ button:hover{border-color:#58a6ff}
 #badge{font-size:11px;padding:3px 8px;border-radius:6px;font-weight:600}
 #badge.ok{background:#0d2b17;color:var(--ok);border:1px solid var(--ok)}
 #badge.bad{background:#3a0d0d;color:var(--bad);border:1px solid var(--bad)}
+#qmsg{font-size:11px;min-width:120px;color:var(--ok)}
+#qmsg.bad{color:var(--bad)}
+/* breakout notes: annotations only — badges never touch engine numbers */
+.bo{flex:none;width:12px;height:12px;line-height:12px;border-radius:2px;font-size:9px;
+font-weight:700;text-align:center;color:#0b0f14;cursor:pointer}
+.bo-situation{background:#d29922}.bo-post-injury{background:#f85149}
+.bo-year-n-leap{background:#3fb950}.bo-role-path{background:#58a6ff}
+.note{padding:5px 8px 7px 24px;background:#141b24;border-left:3px solid #30363d;font-size:11px;color:#c9d1d9}
+.note b{color:#8b98a5;font-weight:600}
+.note .kill{color:#d29922;display:block;margin-top:3px}
 #driftbanner{display:none;background:var(--bad);color:#fff;padding:8px 12px;font-weight:700;text-align:center}
 #driftbanner.show{display:block}
 .wrap{display:flex;gap:8px;padding:8px;align-items:flex-start}
@@ -353,7 +384,8 @@ kbd{background:#11161d;border:1px solid #30363d;border-radius:4px;padding:0 4px;
 <div class=play>{play}</div>
 <div class=bar>
 <span id=setup></span>
-<input id=q placeholder="search a name → Enter = drafted by other">
+<input id=q placeholder="search → Enter = gone · Shift+Enter = MY pick">
+<span id=qmsg></span>
 <button onclick=undo()>Undo</button>
 <button onclick=resetAll()>Reset</button>
 <button onclick=exportJSON()>Export JSON</button>
@@ -511,6 +543,10 @@ function state(){
 // whole-row click: cross off (toggle). ALWAYS works -- no turn gating, so a
 // manager who joins mid-draft marks everyone already gone in seconds. The
 // current overall pick is INFERRED from order.length, never blocked on.
+// breakout-note reveals (view state only -- never persisted, never in the engine)
+const openNotes=new Set();
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function togNote(ev,id){ev.stopPropagation();openNotes.has(id)?openNotes.delete(id):openNotes.add(id);render();}
 function toggleGone(id){
   if(marks[id]){delete marks[id];const i=order.indexOf(id);if(i>=0)order.splice(i,1);}
   else{marks[id]='gone';order.push(id);}
@@ -540,13 +576,17 @@ function render(){
       if(isAvail){if(availShown>=dep)break;availShown++;rk++;}  // taken rows still render (toggleable)
       const adp=p.adp==null?'—':p.adp;
       const cls='row t'+p.t+(status==='mine'?' mine':status==='gone'?' d':'');
+      const badge=p.bo?'<span class="bo bo-'+p.bo.c+'" title="'+p.bo.c+'" onclick="togNote(event,\''+p.id+'\')">'+p.bo.b+'</span>':'';
       h+='<div class="'+cls+'" data-n="'+p.n.toLowerCase()+'" onclick="toggleGone(\''+p.id+'\')" title="click = cross off (toggle)">'+
          '<span class=rk>'+(isAvail?rk:'·')+'</span>'+
+         badge+
          '<span class=nm>'+p.n+'</span>'+
          '<span class="num">'+Math.round(p.proj)+'</span>'+
          '<span class="num adp">'+adp+'</span>'+
          '<button class=mp title="MY pick (adds to your roster)" onclick="draftMine(\''+p.id+'\');event.stopPropagation()">＋</button>'+
          '</div>';
+      if(p.bo&&openNotes.has(p.id))
+        h+='<div class=note>'+esc(p.bo.th)+'<span class=kill><b>kills it:</b> '+esc(p.bo.k)+'</span></div>';
     }
     col.innerHTML=h+'</div>';cols.appendChild(col);
   }
@@ -643,20 +683,46 @@ function exportJSON(){
   a.href=u;a.download='draft-'+META.date+'.json';a.click();URL.revokeObjectURL(u);
 }
 
-// search
+// search. Enter = drafted by other; Shift+Enter = MY pick (keyboard path for our
+// own clock -- no mousing to the ＋ under pressure). Enter acts ONLY on a UNIQUE
+// unmarked match: with "brown" matching several unmarked Browns, first-match-wins
+// would silently cross off the wrong player, and a silently-wrong board is the
+// one failure the console exists to prevent. Ambiguity flashes a count instead;
+// one more letter resolves it.
 const q=document.getElementById('q');
-q.addEventListener('input',()=>{const v=q.value.trim().toLowerCase();
-  document.querySelectorAll('.row').forEach(r=>r.classList.toggle('hi',v&&r.dataset.n.includes(v)));});
-q.addEventListener('keydown',e=>{if(e.key!=='Enter')return;const v=q.value.trim().toLowerCase();if(!v)return;
+function searchMatches(v){
+  const out=[];
   for(const pos of ORDER)for(const p of POOL[pos])
-    if(!marks[p.id]&&p.n.toLowerCase().includes(v)){toggleGone(p.id);q.value='';document.querySelectorAll('.row').forEach(r=>r.classList.remove('hi'));return;}});
+    if(!marks[p.id]&&p.n.toLowerCase().includes(v))out.push(p);
+  return out;
+}
+function flashSearch(msg,bad){
+  const el=document.getElementById('qmsg');
+  el.textContent=msg;el.className=bad?'bad':'';
+  clearTimeout(flashSearch._t);flashSearch._t=setTimeout(()=>{el.textContent='';},2500);
+}
+q.addEventListener('input',()=>{const v=q.value.trim().toLowerCase();
+  document.querySelectorAll('.row').forEach(r=>r.classList.toggle('hi',v&&r.dataset.n.includes(v)));
+  const el=document.getElementById('qmsg');
+  if(!v){el.textContent='';return;}
+  const n=searchMatches(v).length;
+  el.className=n===1?'':'bad';
+  el.textContent=n===1?'↵ ready':n+' matches';});
+q.addEventListener('keydown',e=>{if(e.key!=='Enter')return;const v=q.value.trim().toLowerCase();if(!v)return;
+  const m=searchMatches(v);
+  if(m.length===0){flashSearch('no unmarked match',true);return;}
+  if(m.length>1){flashSearch(m.length+' matches — keep typing',true);return;}
+  if(e.shiftKey)draftMine(m[0].id);else toggleGone(m[0].id);
+  q.value='';document.querySelectorAll('.row').forEach(r=>r.classList.remove('hi'));
+  flashSearch((e.shiftKey?'MY PICK: ':'gone: ')+m[0].n,false);});
 
 // provenance footer
 document.getElementById('prov').innerHTML=
   'valuation snapshot #'+META.valuation_snapshot_id+' · p_starts '+META.pstart_meta.mode+' seed '+META.pstart_meta.seed+
   '<br>DEPLOYED qb_by_round '+JSON.stringify(QBR)+' · defk R'+DEFK+' · TE cap '+CAPS.TE+
   '<br>git '+META.git_sha+' · golden slot '+META.golden_slot+
-  '<br><kbd>click row</kbd> = crossed off (toggle) · <kbd>＋</kbd> = my pick';
+  '<br><kbd>click row</kbd> = crossed off (toggle) · <kbd>＋</kbd> = my pick · <kbd>Enter</kbd> = gone (unique match only) · <kbd>Shift+Enter</kbd> = MY pick'+
+  '<br>badges: <span class="bo bo-situation">S</span> situation · <span class="bo bo-post-injury">I</span> post-injury · <span class="bo bo-year-n-leap">Y</span> yr-2/3 · <span class="bo bo-role-path">R</span> role path — click badge for thesis + kill condition';
 
 // init (state already loaded from the SHA-versioned key above)
 renderSetup();selfTest();render();

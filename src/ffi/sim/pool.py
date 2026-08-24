@@ -11,9 +11,21 @@ Validation gates fail loud (ValueError) rather than silently emitting a
 degraded pool: a partial pool would make every downstream simulation result
 look plausible while being wrong.
 """
+import datetime
+import json
+import pathlib
+import sys
 from dataclasses import dataclass
 
 from ffi.scoring.config import load_config_v1
+
+# Operator-set ADP pin (2026-08-24): Sleeper's `adp_2qb` sample flaps between a
+# ~470-row cohort that matches our league's 16-season QB-density ground truth
+# and a ~800+-row cohort that prices QBs outside the entire observed range (the
+# 2QB sanity gate below catches the bad days). When this TRACKED file exists,
+# ADP comes from its snapshot_id instead of the latest; delete the file to
+# unpin. Presence-in-git = auditable; every build announces the pin loudly.
+ADP_PIN_PATH = pathlib.Path("data/adp-pin.json")
 
 _REQUIRED_POSITIONS = {"QB", "RB", "WR", "TE", "K", "DEF"}
 _MIN_REAL_ADP = 200
@@ -30,6 +42,7 @@ WITH latest_snapshot AS (
     SELECT payload
     FROM raw.sleeper_projections
     WHERE week IS NULL
+      AND (%s::int IS NULL OR snapshot_id = %s::int)
     ORDER BY snapshot_id DESC
     LIMIT 1
 ),
@@ -70,10 +83,53 @@ class PoolPlayer:
     gsis_id: str | None  # for backtest/actuals joins
 
 
+def _adp_pin(conn) -> int | None:
+    """Read the operator ADP pin, validate it, and announce it. Returns the
+    pinned snapshot_id, or None when unpinned (use latest)."""
+    if not ADP_PIN_PATH.exists():
+        return None
+    pin = json.loads(ADP_PIN_PATH.read_text())
+    missing = [k for k in ("snapshot_id", "pinned_at", "reason") if k not in pin]
+    if missing:
+        raise ValueError(
+            f"{ADP_PIN_PATH} is missing required key(s) {missing} -- a pin "
+            "without provenance is not auditable; fix or delete the file"
+        )
+    sid = pin["snapshot_id"]
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT fetched_at FROM raw.sleeper_projections "
+            "WHERE snapshot_id = %s AND week IS NULL",
+            (sid,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        raise ValueError(
+            f"{ADP_PIN_PATH} pins snapshot_id={sid}, which does not exist as a "
+            "season-level Sleeper snapshot -- the pin is stale or the snapshot "
+            "was pruned; fix or delete the file"
+        )
+    age_days = (
+        datetime.datetime.now(datetime.timezone.utc) - row[0]
+    ).total_seconds() / 86400
+    # FAIL-LOUD Level 2: visible fallback (ADR D2 vintage stamping). ADP is
+    # deliberately served from an operator-pinned snapshot, not the latest;
+    # the pin file is tracked in git and this banner prints on EVERY build so
+    # a pinned board can never masquerade as a live one.
+    print(
+        f"⚠ ADP PINNED to Sleeper snapshot {sid} "
+        f"(fetched {row[0]:%Y-%m-%d}, {age_days:.1f}d old) -- {pin['reason']} "
+        f"[delete {ADP_PIN_PATH} to unpin]",
+        file=sys.stderr,
+    )
+    return sid
+
+
 def build_pool(conn, scenario: str) -> list[PoolPlayer]:
     config_version = load_config_v1().version
+    pin = _adp_pin(conn)
     with conn.cursor() as cur:
-        cur.execute(_POOL_QUERY, (config_version, scenario))
+        cur.execute(_POOL_QUERY, (pin, pin, config_version, scenario))
         rows = cur.fetchall()
 
     players = []
