@@ -15,6 +15,9 @@ def schema_hash(record: dict) -> str:
     return hashlib.sha256("|".join(sorted(record.keys())).encode()).hexdigest()
 
 
+SANITY_MODES = ("off", "warn", "fail")
+
+
 class BaseIngester:
     source: str = None  # subclasses must set
 
@@ -22,8 +25,11 @@ class BaseIngester:
     # 'warn' observe-and-log: the payload IS stored, the run is recorded
     #        'sanity_warned', and health.state() never reports it OK
     # 'fail' hard-fail: nothing is stored, the run is recorded 'sanity_failed'
+    # Anything outside SANITY_MODES is rejected by run() before the run row is
+    # created — an unknown mode is a misconfiguration with no safe default.
     # Per-feed numeric thresholds are unset until four weeks of P2 archive
-    # exist (ADR TBD 3), so trending runs 'warn' and projections run 'fail'.
+    # exist (ADR TBD 3), so both gated feeds currently run 'warn'; projections
+    # flips to 'fail' after the 2026-09-08 soak (see ingest/sleeper.py).
     sanity_mode: str = "off"
 
     def fetch(self):
@@ -37,7 +43,8 @@ class BaseIngester:
 
     def sanity_check(self, conn, payload) -> None:
         """Raise SanityGateError if this payload fails its semantic gates.
-        Default no-op; only called when `sanity_mode != 'off'`."""
+        Only called when `sanity_mode != 'off'`; a subclass that sets a mode
+        without implementing this raises rather than silently passing."""
         raise NotImplementedError(
             f"{type(self).__name__}.sanity_mode={self.sanity_mode!r} but "
             f"sanity_check() is not implemented"
@@ -62,6 +69,17 @@ class BaseIngester:
         conn.commit()
 
     def run(self, conn) -> int:
+        # Validated first, before the run row even exists: a typo'd mode is a
+        # misconfiguration, not a data failure, and there is no safe default
+        # to degrade to. Falling back to 'warn' would silently un-gate a feed
+        # that was meant to hard-fail; falling back to 'off' would un-gate it
+        # entirely. Neither is discoverable from a log line, so refuse to run.
+        if self.sanity_mode not in SANITY_MODES:
+            raise ValueError(
+                f"{type(self).__name__}.sanity_mode={self.sanity_mode!r} is not "
+                f"one of {SANITY_MODES} — refusing to run rather than guess "
+                f"which gate mode was meant (ADR D1: no silent degradation)"
+            )
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO raw.ingest_runs (source) VALUES (%s) RETURNING run_id",

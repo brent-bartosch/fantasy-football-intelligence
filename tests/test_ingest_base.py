@@ -82,3 +82,28 @@ def test_hard_fail_mode_records_sanity_failed_and_never_stores(db):
         status, error = cur.fetchone()
     assert status == "sanity_failed"
     assert "deliberately failing gate" in error
+
+
+class _TypoModeIngester(GoodIngester):
+    source = "test_typo_mode"
+    sanity_mode = "wan"  # typo for 'warn'
+
+    def store(self, conn, run_id, payload):
+        raise AssertionError("store() must not be reached with an unknown mode")
+
+
+def test_unknown_sanity_mode_raises_before_anything_runs(db):
+    """A typo'd mode must not degrade to 'warn' or 'off'.
+
+    `!= 'off'` is the only test the run loop makes, so 'wan' would have
+    silently run the gate in warn mode — un-gating a feed configured to
+    hard-fail, invisibly. Refuse instead, and refuse before the run row
+    exists: this is a misconfiguration, not a data failure.
+    """
+    with pytest.raises(ValueError, match="sanity_mode='wan'"):
+        _TypoModeIngester().run(db)
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM raw.ingest_runs WHERE source='test_typo_mode'"
+        )
+        assert cur.fetchone()[0] == 0

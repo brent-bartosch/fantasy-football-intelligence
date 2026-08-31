@@ -19,6 +19,7 @@ from ffi.ingest.gates import (
     check_fieldset,
     check_nonzero_coverage,
     check_rank_correlation,
+    union_keys,
 )
 
 log = structlog.get_logger()
@@ -179,9 +180,14 @@ class SleeperTrendingIngester(BaseIngester):
         prior_rows = self._prior_add_rows(conn)
         if prior_rows is None:
             return  # day one: nothing to compare against
-        check_fieldset(sorted(prior_rows[0]), sorted(adds[0]), feed=self.source)
-        prior = {rec["player_id"]: float(rec["count"]) for rec in prior_rows}
-        curr = {rec["player_id"]: float(rec["count"]) for rec in adds}
+        # Union across all rows, not row[0]: a key that appears on (or
+        # vanishes from) record 40 alone is invisible to a single-record
+        # comparison, and nothing guarantees Sleeper's rows stay uniform.
+        check_fieldset(union_keys(prior_rows), union_keys(adds), feed=self.source)
+        # Uncoerced on purpose — check_rank_correlation floats behind its own
+        # guard, so a non-numeric count fails as a named gate error.
+        prior = {rec["player_id"]: rec["count"] for rec in prior_rows}
+        curr = {rec["player_id"]: rec["count"] for rec in adds}
         check_rank_correlation(prior, curr, feed=self.source)
 
     def store(self, conn, run_id: int, payload) -> None:

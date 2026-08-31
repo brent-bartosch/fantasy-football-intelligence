@@ -193,3 +193,59 @@ def test_gate_failure_stores_the_payload_and_flags_the_run(db):
     # The row has to say WHY, or the operator reading tomorrow's briefing has
     # nothing to act on: this reversal trips the rank-correlation gate.
     assert "rank correlation" in error
+
+
+def _backdate(db):
+    """Age the stored archive a day so the next run has a prior to compare to."""
+    with db.cursor() as cur:
+        cur.execute("UPDATE raw.sleeper_trending SET archive_date = archive_date - 1")
+    db.commit()
+
+
+def test_fieldset_gate_catches_drift_on_a_record_other_than_the_first(db):
+    """Union-based field-set: a key added to record 40 and not record 0 must
+    still fire. Comparing `payload[0]` only would sail straight past it."""
+    first = _payload()
+    FixtureIngester(first).run(db)
+    _backdate(db)
+
+    drifted = _payload()
+    drifted["add"][40]["trend_score"] = 0.5  # record 0 is untouched
+    run_id = FixtureIngester(drifted).run(db)
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT status, error FROM raw.ingest_runs WHERE run_id=%s", (run_id,)
+        )
+        status, error = cur.fetchone()
+    assert status == "sanity_warned"
+    assert "added=['trend_score']" in error
+    # Observe-and-log still archives the day (R8).
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM raw.sleeper_trending WHERE run_id=%s", (run_id,)
+        )
+        assert cur.fetchone()[0] == 2
+
+
+def test_identical_field_union_passes_the_gate(db):
+    FixtureIngester(_payload()).run(db)
+    _backdate(db)
+    run_id = FixtureIngester(_payload()).run(db)
+    with db.cursor() as cur:
+        cur.execute("SELECT status FROM raw.ingest_runs WHERE run_id=%s", (run_id,))
+        assert cur.fetchone()[0] == "success"
+
+
+def test_non_numeric_count_fails_as_a_named_gate_error(db):
+    """A count that arrives as a string is type drift, and must surface as a
+    gate error naming the record — not a bare ValueError from a comprehension."""
+    bad = _payload()
+    bad["add"][3]["count"] = "many"
+    run_id = FixtureIngester(bad).run(db)
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT status, error FROM raw.ingest_runs WHERE run_id=%s", (run_id,)
+        )
+        status, error = cur.fetchone()
+    assert status == "sanity_warned"
+    assert "non-numeric" in error and "player_id='1003'" in error

@@ -4,7 +4,12 @@ import requests
 import structlog
 
 from ffi.ingest.base import BaseIngester, IngestError
-from ffi.ingest.gates import check_nonzero_coverage, check_rank_correlation
+from ffi.ingest.gates import (
+    check_fieldset,
+    check_nonzero_coverage,
+    check_rank_correlation,
+    union_keys,
+)
 
 log = structlog.get_logger()
 
@@ -28,11 +33,17 @@ class SleeperProjectionsIngester(BaseIngester):
 
     source = "sleeper_projections"
 
-    # Hard-fail: unlike the trending archive, a bad projections snapshot is
-    # fully recoverable (tomorrow's pull replaces it) and a bad one poisons
-    # valuation, the board and every downstream recommendation. Refusing to
-    # store is strictly cheaper than storing wrong (ADR D1).
-    sanity_mode = "fail"
+    # End-state is hard-fail: unlike the trending archive, a bad projections
+    # snapshot is fully recoverable (tomorrow's pull replaces it) while a bad
+    # one poisons valuation, the board and every downstream recommendation, so
+    # refusing to store is strictly cheaper than storing wrong (ADR D1).
+    # SOAK: warn until 2026-09-08 — fit correlation floor from a week of
+    # observed rho in ingest_runs.error, then flip to "fail" (ADR Domain 1
+    # end-state). The 0.85 floor and the new union field-set check have never
+    # seen two real consecutive days; hard-failing on an unfitted threshold
+    # would block the morning chain on a guess. Flip = this one literal (or
+    # the sanity_mode= constructor override, which the runner can already use).
+    sanity_mode = "warn"
 
     # `pts_ppr` and not `adp_2qb`: adp_2qb is the field with KNOWN cohort
     # instability (data/adp-pin.json exists precisely because it flaps), so
@@ -106,9 +117,17 @@ class SleeperProjectionsIngester(BaseIngester):
     # default below is what production ingestion actually runs with.
     MIN_PROJECTED = {"QB": 60, "RB": 120, "WR": 150, "TE": 60}
 
-    def __init__(self, season: int, week: int | None):
+    def __init__(
+        self, season: int, week: int | None, *, sanity_mode: str | None = None
+    ):
         self.season = season
         self.week = week
+        # Explicit per-run override of the class default, so flipping the soak
+        # (or forcing hard-fail for one manual run) needs no code edit. `None`
+        # leaves the class attribute alone; anything else is validated by
+        # BaseIngester.run(), which rejects an unknown mode outright.
+        if sanity_mode is not None:
+            self.sanity_mode = sanity_mode
 
     def fetch(self):
         url = f"{BASE_URL}/{self.season}"
@@ -173,33 +192,63 @@ class SleeperProjectionsIngester(BaseIngester):
             )
 
     def _prior_payload(self, conn) -> list | None:
+        """The most recent earlier snapshot for THIS (season, week) scope.
+
+        `week IS NOT DISTINCT FROM %s`, not a hard-coded `week IS NULL`: the
+        season-level payload (week NULL) and a week-N payload are different
+        populations — season totals versus one week's projection — so
+        correlating a week-5 pull against the season snapshot compares
+        magnitudes that share no scale and would trip the rank gate on every
+        weekly run while never actually gating week-5 drift. `IS NOT DISTINCT
+        FROM` rather than `=` because `week = NULL` matches nothing, which is
+        how a season-level run would silently lose its own baseline.
+        """
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT payload FROM raw.sleeper_projections "
-                "WHERE week IS NULL AND season=%s AND run_id IS NOT NULL "
+                "WHERE week IS NOT DISTINCT FROM %s AND season IS NOT DISTINCT FROM %s "
+                "AND run_id IS NOT NULL "
                 "ORDER BY snapshot_id DESC LIMIT 1",
-                (self.season,),
+                (self.week, self.season),
             )
             row = cur.fetchone()
         return None if row is None else row[0]
 
+    @staticmethod
+    def _stats(payload) -> list[dict]:
+        return [rec.get("stats", {}) for rec in payload]
+
     def _ranked(self, payload) -> dict:
+        # Values are passed through uncoerced on purpose: check_rank_correlation
+        # does the float() behind its own guard, so a non-numeric pts_ppr
+        # surfaces as a SanityGateError naming the key instead of a bare
+        # ValueError raised out of this comprehension.
         return {
-            rec["player_id"]: float(rec["stats"][self.RANK_KEY])
+            rec["player_id"]: rec["stats"][self.RANK_KEY]
             for rec in payload
             if self.RANK_KEY in rec.get("stats", {})
         }
 
     def sanity_check(self, conn, payload) -> None:
         check_nonzero_coverage(
-            [rec.get("stats", {}) for rec in payload],
+            self._stats(payload),
             feed=self.source,
             value_key=self.RANK_KEY,
             min_players=self.MIN_RANKED,
         )
         prior = self._prior_payload(conn)
         if prior is None:
-            return  # first snapshot of the season: nothing to compare against
+            return  # first snapshot of this scope: nothing to compare against
+        # Union of stats keys across every record, not record[0]'s: the
+        # adp_2qb disappearance is precisely a key that goes missing from part
+        # of the payload, and Sleeper's records are ragged (deep-bench entries
+        # carry ADP metadata only), so record[0] is not representative of
+        # anything. The union is the only stable field-set this feed has.
+        check_fieldset(
+            union_keys(self._stats(prior)),
+            union_keys(self._stats(payload)),
+            feed=self.source,
+        )
         check_rank_correlation(
             self._ranked(prior), self._ranked(payload), feed=self.source
         )

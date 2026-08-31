@@ -23,6 +23,50 @@ class SanityGateError(Exception):
     """A payload passed schema validation but failed a semantic gate."""
 
 
+_ID_KEYS = ("player_id", "id")
+
+
+def _record_label(row: Mapping, index: int) -> str:
+    """Name a row by its own id if it has one, else by position."""
+    for key in _ID_KEYS:
+        if key in row:
+            return f"{key}={row[key]!r}"
+    return f"record #{index}"
+
+
+def _as_float(value, *, feed: str, field: str, where: str) -> float:
+    """float() whose failure is a gate failure, not a bare ValueError.
+
+    A count that arrives as `"n/a"` or a dict IS upstream drift — exactly what
+    these gates exist to catch — so it must surface as SanityGateError, which
+    the caller's sanity_mode routes, naming the offending record and value.
+    An uncontextualised ValueError from inside a comprehension tells the
+    operator nothing and bypasses the warn/fail decision entirely.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise SanityGateError(
+            f"{feed}: non-numeric {field}={value!r} on {where} — a value that "
+            f"cannot be compared is upstream type drift, not a parse bug"
+        ) from exc
+
+
+def union_keys(records: Sequence[Mapping]) -> list[str]:
+    """Every key seen across ALL records, not just the first one's.
+
+    A field-set built from `records[0]` only catches drift that happens to
+    land on record 0. Sleeper's payloads are ragged by design (deep-bench
+    records carry ADP metadata only), so the sole comparable unit is the
+    union — a key that vanishes from record 500 and survives on record 0 is
+    still the adp_2qb failure mode.
+    """
+    keys: set[str] = set()
+    for rec in records:
+        keys.update(rec)
+    return sorted(keys)
+
+
 def check_fieldset(
     prev: Sequence[str] | None, curr: Sequence[str], *, feed: str
 ) -> None:
@@ -78,8 +122,18 @@ def check_rank_correlation(
             f"{feed}: only {len(keys)} keys overlap between snapshots "
             f"(need >= {min_overlap}) — a cohort this different is drift, not noise"
         )
-    a = _average_ranks([float(prev[k]) for k in keys])
-    b = _average_ranks([float(curr[k]) for k in keys])
+    a = _average_ranks(
+        [
+            _as_float(prev[k], feed=feed, field="prior value", where=f"key {k!r}")
+            for k in keys
+        ]
+    )
+    b = _average_ranks(
+        [
+            _as_float(curr[k], feed=feed, field="current value", where=f"key {k!r}")
+            for k in keys
+        ]
+    )
     n = len(keys)
     mean_a, mean_b = sum(a) / n, sum(b) / n
     cov = sum((x - mean_a) * (y - mean_b) for x, y in zip(a, b))
@@ -109,11 +163,14 @@ def check_nonzero_coverage(
     still reads 100% (the R5 finding in ffi.ingest.sleeper).
     """
     count = 0
-    for row in rows:
+    for index, row in enumerate(rows):
         value = row.get(value_key)
         if value is None:
             continue
-        if float(value) > 0:
+        coerced = _as_float(
+            value, feed=feed, field=repr(value_key), where=_record_label(row, index)
+        )
+        if coerced > 0:
             count += 1
     if count < min_players:
         raise SanityGateError(
