@@ -52,6 +52,7 @@ for `scripts/check_file_size.sh` — keep the third column purely numeric.
 | `src/ffi/flags.py` | Single reader of `config/modules.yaml` (per-module enable flags, ADR D8 rollback unit). Leaf | 100 |
 | `src/ffi/ingest/gates.py` | Semantic sanity gates at every ingest boundary: field-set diff, distribution assertions, wk/wk rank correlation ≥0.85. Pure functions; imports no feed it checks | 250 |
 | `src/ffi/usage/` | `usage_weekly` build + trend rules + cold-start variants (package) | 400 |
+| `src/ffi/usage/__init__.py` | Shared value types for the usage package (`UsageRow`, `UsageFrame`, `Rule`, `TrendSignal`, `TrendResult`, `METRICS`). Leaf: imports nothing internal, so build -> trends -> coldstart stays acyclic | 120 |
 | `src/ffi/usage/build.py` | Derive `public.usage_weekly` from nflverse; `games_complete` / `teams_observed` partial-publish guard (R5) | 300 |
 | `src/ffi/usage/trends.py` | Role-change rules → ASCENDING / FALLING / WATCH with evidence lines and rule IDs | 400 |
 | `src/ffi/usage/coldstart.py` | Weeks 1–3 rule variants (1–2 wk windows, camp/preseason priors), COLD-START labeling (R7) | 200 |
@@ -243,7 +244,7 @@ exist are provisional in *name and shape only* — the semantics are fixed by th
 | League clock | `deadline(event: str, week: int) -> datetime` (tz-aware), `window(event, week) -> tuple[datetime, datetime]`, `fallback_fire_time(job, week) -> datetime` | `src/ffi/league_state/clock.py` |
 | League state read/write | `load_transactions(week) -> list[Transaction]`, `load_rosters(as_of) -> list[RosterRow]`, `record(rows, source, ts_precision) -> None` | `src/ffi/league_state/adapter.py` |
 | Capture ingestion | `parse_capture(path) -> list[Transaction]` — the only screenshot/text parser | `src/ffi/league_state/manual.py` |
-| Usage table build | `build_usage_weekly(week) -> UsageFrame` (carries `games_complete`, `teams_observed`) | `src/ffi/usage/build.py` |
+| Usage table build | `build_usage_weekly(conn, season: int, week: int) -> UsageFrame` (carries `games_complete`, `teams_observed`); `store_usage_weekly(conn, frame) -> int`; `load_usage_weekly(conn, season, week) -> UsageFrame` | `src/ffi/usage/build.py` |
 | Trend classification | `classify(usage: UsageFrame, week: int) -> TrendResult` (ASCENDING / FALLING / WATCH + evidence lines + rule IDs) | `src/ffi/usage/trends.py` |
 | Market overlay / urgency | `urgency(signal, market) -> float \| Refusal` — fails closed when either input's gate failed | `src/ffi/usage/market.py` |
 | Roster cutline | `cutline(roster, position) -> CutlineRow` | `src/ffi/waiver/cutline.py` |
