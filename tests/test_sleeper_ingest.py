@@ -2,6 +2,7 @@ import json
 import pathlib
 import pytest
 from ffi.ingest.base import IngestError
+from ffi.ingest.gates import SanityGateError
 from ffi.ingest.sleeper import SleeperProjectionsIngester
 
 FIXTURE = json.loads(
@@ -17,6 +18,12 @@ class FixtureIngester(SleeperProjectionsIngester):
     # existing ratio/FD tests below need the population-collapse floor
     # disabled to isolate what they're actually testing.
     MIN_PROJECTED = {"QB": 0, "RB": 0, "WR": 0, "TE": 0}
+
+    # Same reasoning for the sanity gate's coverage floor: MIN_RANKED=400 is
+    # sized for the live payload (628 positive pts_ppr, probed 2026-08-31).
+    # The gate itself is exercised deliberately below rather than incidentally
+    # tripping every store test.
+    MIN_RANKED = 0
 
     def fetch(self):
         return FIXTURE
@@ -132,3 +139,25 @@ def test_store_writes_snapshot(db):
             (run_id,),
         )
         assert cur.fetchone() == (2025, 5, 2)
+
+
+def test_gate_hard_fails_and_stores_nothing_when_pts_ppr_coverage_collapses(db):
+    """Projections run sanity_mode='fail': a collapsed payload must not reach
+    raw.sleeper_projections, because a bad snapshot poisons valuation and
+    tomorrow's pull would replace it anyway (ADR D1)."""
+
+    class LiveFloorIngester(FixtureIngester):
+        MIN_RANKED = SleeperProjectionsIngester.MIN_RANKED  # live floor: 400
+
+    ing = LiveFloorIngester(season=2025, week=5)
+    with pytest.raises(SanityGateError, match="positive 'pts_ppr'"):
+        ing.run(db)
+    with db.cursor() as cur:
+        cur.execute("SELECT count(*) FROM raw.sleeper_projections")
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT status, error FROM raw.ingest_runs WHERE source='sleeper_projections'"
+        )
+        status, error = cur.fetchone()
+    assert status == "sanity_failed"
+    assert "pts_ppr" in error

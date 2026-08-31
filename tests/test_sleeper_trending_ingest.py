@@ -162,3 +162,34 @@ def test_fetch_does_not_retry_a_4xx(monkeypatch):
         SleeperTrendingIngester().fetch()
     assert len(calls) == 1
     assert sleeps == []
+
+
+def test_gate_failure_stores_the_payload_and_flags_the_run(db):
+    """Observe-and-log: the archive must land even on a suspect day (R8),
+    but the run must never look successful."""
+    first = _payload()
+    FixtureIngester(first).run(db)
+    # Force an earlier archive_date so the gate has a prior to compare to.
+    with db.cursor() as cur:
+        cur.execute("UPDATE raw.sleeper_trending SET archive_date = archive_date - 1")
+    db.commit()
+
+    reversed_counts = {
+        "add": [{"player_id": str(1000 + i), "count": i + 1} for i in range(120)],
+        "drop": first["drop"],
+    }
+    run_id = FixtureIngester(reversed_counts).run(db)
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT status, error FROM raw.ingest_runs WHERE run_id=%s", (run_id,)
+        )
+        status, error = cur.fetchone()
+        cur.execute(
+            "SELECT count(*) FROM raw.sleeper_trending WHERE run_id=%s", (run_id,)
+        )
+        stored = cur.fetchone()[0]
+    assert status == "sanity_warned"
+    assert stored == 2  # the archive still landed
+    # The row has to say WHY, or the operator reading tomorrow's briefing has
+    # nothing to act on: this reversal trips the rank-correlation gate.
+    assert "rank correlation" in error

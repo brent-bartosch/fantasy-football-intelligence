@@ -4,6 +4,7 @@ import requests
 import structlog
 
 from ffi.ingest.base import BaseIngester, IngestError
+from ffi.ingest.gates import check_nonzero_coverage, check_rank_correlation
 
 log = structlog.get_logger()
 
@@ -26,6 +27,22 @@ class SleeperProjectionsIngester(BaseIngester):
     """
 
     source = "sleeper_projections"
+
+    # Hard-fail: unlike the trending archive, a bad projections snapshot is
+    # fully recoverable (tomorrow's pull replaces it) and a bad one poisons
+    # valuation, the board and every downstream recommendation. Refusing to
+    # store is strictly cheaper than storing wrong (ADR D1).
+    sanity_mode = "fail"
+
+    # `pts_ppr` and not `adp_2qb`: adp_2qb is the field with KNOWN cohort
+    # instability (data/adp-pin.json exists precisely because it flaps), so
+    # correlating on it would fire on days the projections themselves are
+    # fine. pts_ppr is the projection the gate actually cares about.
+    # Floor basis, live-probed 2026-08-31 on the season-level 2026 payload:
+    # 3303 records, 628 with a positive pts_ppr. 400 is ~2/3 of observed, so
+    # normal roster churn cannot trip it but a population collapse does.
+    RANK_KEY = "pts_ppr"
+    MIN_RANKED = 400
 
     # The project's core edge depends on per-position volume being
     # projected: these feed both FD imputation (fit_fd_rates/impute_fd take
@@ -154,3 +171,35 @@ class SleeperProjectionsIngester(BaseIngester):
                 "INSERT INTO raw.sleeper_projections (run_id, season, week, payload) VALUES (%s,%s,%s,%s)",
                 (run_id, self.season, self.week, json.dumps(payload)),
             )
+
+    def _prior_payload(self, conn) -> list | None:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT payload FROM raw.sleeper_projections "
+                "WHERE week IS NULL AND season=%s AND run_id IS NOT NULL "
+                "ORDER BY snapshot_id DESC LIMIT 1",
+                (self.season,),
+            )
+            row = cur.fetchone()
+        return None if row is None else row[0]
+
+    def _ranked(self, payload) -> dict:
+        return {
+            rec["player_id"]: float(rec["stats"][self.RANK_KEY])
+            for rec in payload
+            if self.RANK_KEY in rec.get("stats", {})
+        }
+
+    def sanity_check(self, conn, payload) -> None:
+        check_nonzero_coverage(
+            [rec.get("stats", {}) for rec in payload],
+            feed=self.source,
+            value_key=self.RANK_KEY,
+            min_players=self.MIN_RANKED,
+        )
+        prior = self._prior_payload(conn)
+        if prior is None:
+            return  # first snapshot of the season: nothing to compare against
+        check_rank_correlation(
+            self._ranked(prior), self._ranked(payload), feed=self.source
+        )

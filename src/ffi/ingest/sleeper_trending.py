@@ -15,6 +15,11 @@ import requests
 import structlog
 
 from ffi.ingest.base import BaseIngester, IngestError
+from ffi.ingest.gates import (
+    check_fieldset,
+    check_nonzero_coverage,
+    check_rank_correlation,
+)
 
 log = structlog.get_logger()
 
@@ -38,6 +43,21 @@ RETRY_BACKOFF_SECONDS = (2, 4)  # slept after attempt 1 and attempt 2
 
 class SleeperTrendingIngester(BaseIngester):
     source = "sleeper_trending"
+
+    # Observe-and-log, not hard-fail: this archive is unrecoverable (R8), so
+    # refusing to store a suspect day destroys more than it protects. The run
+    # is recorded 'sanity_warned' and ffi.health.state() then refuses to
+    # render it OK, so the operator sees it in the briefing the next morning.
+    sanity_mode = "warn"
+
+    # The `add` list is what the urgency overlay will read, so it is the list
+    # the gate watches. Deliberately equal to MIN_ROWS_PER_DIRECTION rather
+    # than to a healthy day: the server caps each direction at 100 rows
+    # (SERVER_ROW_CAP, probed 2026-08-31), so a floor of 100 positive counts
+    # would fire whenever a single archived row carried count<=0, and on every
+    # 50-99 row day that validate() legitimately admits. This floor adds what
+    # validate() cannot see — rows present but their counts collapsed to zero.
+    MIN_POSITIVE_COUNTS = MIN_ROWS_PER_DIRECTION
 
     def __init__(self, lookback_hours: int = 24, limit: int = SERVER_ROW_CAP):
         self.lookback_hours = lookback_hours
@@ -128,6 +148,41 @@ class SleeperTrendingIngester(BaseIngester):
                     )
             total += len(rows)
         return total
+
+    def _prior_add_rows(self, conn) -> list | None:
+        """The `add` payload from the most recent EARLIER archive day.
+
+        Strictly earlier, not `<=`: a same-day retry must not correlate
+        against the snapshot it is retrying.
+        """
+        today = (
+            datetime.datetime.now(datetime.timezone.utc).astimezone(LEAGUE_TZ).date()
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT payload FROM raw.sleeper_trending "
+                "WHERE trend_type='add' AND archive_date < %s "
+                "ORDER BY archive_date DESC, snapshot_id DESC LIMIT 1",
+                (today,),
+            )
+            row = cur.fetchone()
+        return None if row is None else row[0]
+
+    def sanity_check(self, conn, payload) -> None:
+        adds = payload["add"]
+        check_nonzero_coverage(
+            adds,
+            feed=self.source,
+            value_key="count",
+            min_players=self.MIN_POSITIVE_COUNTS,
+        )
+        prior_rows = self._prior_add_rows(conn)
+        if prior_rows is None:
+            return  # day one: nothing to compare against
+        check_fieldset(sorted(prior_rows[0]), sorted(adds[0]), feed=self.source)
+        prior = {rec["player_id"]: float(rec["count"]) for rec in prior_rows}
+        curr = {rec["player_id"]: float(rec["count"]) for rec in adds}
+        check_rank_correlation(prior, curr, feed=self.source)
 
     def store(self, conn, run_id: int, payload) -> None:
         archive_date = (
