@@ -1,6 +1,7 @@
 import dataclasses
 
 import pytest
+import structlog
 
 from ffi.usage import METRICS
 from ffi.usage.build import build_usage_weekly, load_usage_weekly, store_usage_weekly
@@ -194,6 +195,67 @@ def test_null_offense_pct_yields_null_snap_share(db):
     # The rest of the week is unaffected — one NULL is not a failed build.
     assert by_id["00-0000002"].snap_share == pytest.approx(0.55)
     assert by_id["00-0000001"].target_share == pytest.approx(12 / 34)
+
+
+def test_all_null_snap_feed_disables_snap_share_and_survives_a_round_trip(db):
+    # The shape the `if not snaps` predicate missed: the snap feed HAS published
+    # rows for this week, but every offense_pct in them is NULL. build saw a
+    # non-empty map and left snap_share advertised; load, which looks at the
+    # stored rows, disabled it. Same week, same data, two different frames —
+    # a rule would run on Tuesday and be disabled on Wednesday. Both paths now
+    # decide off the assembled rows, so the round trip is an identity.
+    _seed(db, COMPLETE_SF)
+    with db.cursor() as cur:
+        for gsis_id, _, _, _, _ in COMPLETE_SF:
+            cur.execute(
+                "INSERT INTO raw.nflverse_snap_counts "
+                "(gsis_id, season, week, team, position, offense_snaps, offense_pct) "
+                "VALUES (%s, 2025, 3, 'SF', 'WR', NULL, NULL)",
+                (gsis_id,),
+            )
+    db.commit()
+    frame = build_usage_weekly(db, 2025, 3)
+    assert all(r.snap_share is None for r in frame.rows)
+    assert "snap_share" in frame.disabled_metrics
+    assert frame.available_metrics == frozenset({"target_share", "carry_share"})
+    # Shares that do NOT depend on the snap feed are untouched.
+    by_id = {r.gsis_id: r for r in frame.rows}
+    assert by_id["00-0000001"].target_share == pytest.approx(12 / 34)
+
+    store_usage_weekly(db, frame)
+    loaded = load_usage_weekly(db, 2025, 3)
+    # The identity property itself, asserted directly.
+    assert loaded.available_metrics == frame.available_metrics
+    assert loaded.disabled_metrics == frame.disabled_metrics
+
+
+def test_load_disables_snap_share_on_a_stored_all_null_regular_season_week(db):
+    # Load's own decision, isolated from build: rows land in usage_weekly with
+    # snap_share NULL and week 3 (regular season, so this is a feed outage, not
+    # the postseason coverage boundary). Load must disable the metric AND say
+    # which of the two it is — a postseason-worded line on a week-3 outage
+    # would read as expected-and-fine and nobody would chase the feed.
+    with db.cursor() as cur:
+        for i, (gsis_id, team, position, *_) in enumerate(COMPLETE_SF):
+            cur.execute(
+                "INSERT INTO public.usage_weekly (gsis_id, season, week, team, "
+                "position, snap_share, target_share, carry_share, route_share, "
+                "rz_touches, team_targets, team_carries, games_complete, "
+                "teams_observed, computed_at) VALUES (%s, 2025, 3, %s, %s, NULL, "
+                "%s, NULL, NULL, NULL, 34, 26, 1, 1, now())",
+                (gsis_id, team, position, (i + 1) / 34),
+            )
+    db.commit()
+    with structlog.testing.capture_logs() as logs:
+        frame = load_usage_weekly(db, 2025, 3)
+    assert "snap_share" in frame.disabled_metrics
+    assert "snap_share" not in frame.available_metrics
+    assert set(METRICS) == frame.available_metrics | set(frame.disabled_metrics)
+    assert frame.available_metrics == frozenset({"target_share", "carry_share"})
+    entry = next(e for e in logs if e["event"] == "usage.no_snap_counts")
+    assert entry["log_level"] == "warning"
+    assert entry["path"] == "load"
+    assert "postseason" not in entry["note"]
 
 
 def test_frame_and_row_are_frozen(db):
