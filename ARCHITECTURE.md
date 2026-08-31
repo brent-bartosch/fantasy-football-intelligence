@@ -70,6 +70,7 @@ for `scripts/check_file_size.sh` — keep the third column purely numeric.
 | `src/ffi/league_state/clock.py` | Single reader of `config/league_clock.yaml`; deadline/window derivation for every job time | 200 |
 | `src/ffi/trade_angles.py` | Window 6: opponent needs, buy-low / sell-high, QB-repair angle. Recommend-only | 400 |
 | `src/ffi/reports/` | Renderers for the two decision artifacts (package). Composites go through `render_or_refuse` | 400 |
+| `src/ffi/reports/health_section.py` | Briefing health-section renderers: artifact freshness, archive continuity, expected-season assertions. Extracted from `scripts/morning_briefing.py` at its 400-line ceiling | 200 |
 | `src/ffi/reports/claims.py` | Monday-evening claims brief → `reports/claims-YYYY-WW.md` | 350 |
 | `src/ffi/reports/trends.py` | Tuesday trends & targets report → `reports/trends-YYYY-WW.md` | 400 |
 | `scripts/notify.py` | The ONLY module that sends a push. ntfy topic from `NTFY_TOPIC_URL`; 3/week cap enforced in code against `push_log`; suppressed pushes recorded | 200 |
@@ -133,7 +134,7 @@ topological sort (order below is a valid topological order; every edge points st
 
 **Layer 5 — jobs (top of the graph; nothing imports `scripts/`):**
 
-- `scripts/morning_briefing.py` → `health`, `flags`, `db`, `ids`, `league_state`
+- `scripts/morning_briefing.py` → `health`, `flags`, `db`, `ids`, `league_state`, `reports/health_section`, `ingest/fantasypros`, `signals_apply` (the last two predate this branch; recorded here so the edge list is not fiction)
 - `scripts/run_claims_brief.py`, `scripts/run_trends_report.py` → `reports/` and anything below it
 - `scripts/notify.py` → `db`, `health` (and nothing else internal — it must stay importable from any job)
 - `scripts/probe_yahoo_access.py` → `yahoo_client`, `db`

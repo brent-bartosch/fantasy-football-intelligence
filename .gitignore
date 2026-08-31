@@ -81,7 +81,10 @@ browser-profiles/
 playwright/.auth/
 
 # Database backups
-backups/
+/backups/
 
-# Morning briefing output
-reports/
+# Morning briefing output artifacts (repo-root reports/ only).
+# Anchored: an unanchored `reports/` also swallows src/ffi/reports/, the
+# Layer-4 renderer package (ARCHITECTURE §1b) — its files would be silently
+# untracked and lost on a fresh clone.
+/reports/

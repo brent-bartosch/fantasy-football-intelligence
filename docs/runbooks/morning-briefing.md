@@ -91,8 +91,9 @@ Two consequences worth knowing before you debug:
 
 ## Reading a red-flag exit
 
-A nonzero exit from `morning_briefing.py` (or from the launchd job as a
-whole, via the `&&` chain) means: **read the briefing file, the job did not
+A nonzero exit from `morning_briefing.py` — or from the launchd job as a
+whole, since the R23 trapped-`;` chain lets the briefing's own exit code win
+over any earlier step's — means: **read the briefing file, the job did not
 fail silently.** The script prints `RED FLAGS:` followed by the specific
 reasons (stale sleeper snapshot, a failed ingest run, the structural health
 gate failing, missing backups, etc.) both to stdout (captured in
