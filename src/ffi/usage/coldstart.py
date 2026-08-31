@@ -10,6 +10,7 @@ Imports only ffi.usage (value types); ffi.usage.trends imports THIS module,
 never the reverse.
 """
 
+from collections import Counter
 from collections.abc import Mapping
 
 import structlog
@@ -108,6 +109,9 @@ def evaluate_cold_start(
     """
     signals: list[TrendSignal] = []
     disabled: list[tuple[str, str]] = []
+    # NOTE: this loop is intentionally duplicated in trends.py:classify — a fix
+    # here almost certainly applies there; extraction to a shared _engine leaf
+    # is a Plan 2 decision (needs ARCHITECTURE §1b row).
     for rule in COLD_START_RULES:
         missing = sorted(rule.requires - available)
         if missing:
@@ -143,14 +147,8 @@ def evaluate_cold_start(
         log.warning(
             "usage.cold_start_rule_disabled", week=week, rule_id=rule_id, reason=reason
         )
-    for s in signals:
-        log.info(
-            "usage.cold_start_signal",
-            week=week,
-            gsis_id=s.gsis_id,
-            direction=s.direction,
-            rule_id=s.rule_id,
-            evidence=s.evidence,
-        )
+    # One line per rule, not per signal — see trends.py:classify for why.
+    for rule_id, count in sorted(Counter(s.rule_id for s in signals).items()):
+        log.info("usage.cold_start_signals", week=week, rule_id=rule_id, count=count)
     signals.sort(key=lambda s: (s.gsis_id, s.rule_id))
     return signals, sorted(disabled)

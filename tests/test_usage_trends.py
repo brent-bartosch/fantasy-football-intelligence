@@ -173,6 +173,48 @@ def test_standard_rules_are_inactive_during_cold_start():
     assert all(s.rule_id.endswith("_cs") for s in result.signals)
 
 
+def _ramp_frames(through_week: int):
+    """One player with a complete, all-metrics row in every week 1..N, so no
+    rule can be disabled for a missing metric or a missing week."""
+    weeks = {
+        w: [
+            _row(
+                "RAMP",
+                w,
+                snap_share=0.30 + 0.02 * w,
+                target_share=0.10,
+                rz_touches=1,
+                route_share=0.50,
+                carry_share=0.40,
+            )
+        ]
+        for w in range(1, through_week + 1)
+    }
+    return _frames(weeks)
+
+
+COLD_START_REASON = "cold-start mode: standard catalogue inactive through week 3"
+
+
+def test_cold_start_weeks_announce_the_inactive_standard_catalogue():
+    """R27: disabled_rules is the contract that no rule is EVER silently
+    skipped. In weeks 1-3 the whole standard catalogue is suppressed, so all
+    four rules must be named with that reason — a reader must be able to tell
+    deliberate suppression from a rule that quietly failed to run."""
+    result = classify(_ramp_frames(3), week=3)
+    disabled = dict(result.disabled_rules)
+    assert {r.rule_id for r in STANDARD_RULES} <= set(disabled)
+    for rule in STANDARD_RULES:
+        assert disabled[rule.rule_id] == COLD_START_REASON
+
+
+def test_week_4_does_not_claim_the_standard_catalogue_is_inactive():
+    result = classify(_ramp_frames(4), week=4)
+    reasons = dict(result.disabled_rules)
+    assert COLD_START_REASON not in reasons.values()
+    assert not any(r.rule_id in reasons for r in STANDARD_RULES)
+
+
 # --- Metric availability --------------------------------------------------
 def test_rules_needing_an_unavailable_metric_are_disabled_loudly():
     available = frozenset({"snap_share", "target_share", "carry_share"})
@@ -186,11 +228,74 @@ def test_rules_needing_an_unavailable_metric_are_disabled_loudly():
 
 
 def test_rules_needing_more_weeks_than_exist_are_disabled_loudly():
-    weeks = {5: [_row("X", 5, snap_share=0.7)], 6: [_row("X", 6, snap_share=0.7)]}
+    """Two observed weeks: an established starter SLIDING 91% -> 80%.
+
+    Both weeks are above the 55% threshold, and with only two weeks there is
+    no prior week to verify the crossing against — so a min_weeks=2 rule would
+    fire ASCENDING on a player whose usage is falling. snap_rise_2wk therefore
+    demands 3 observed weeks and takes a loud disablement instead: an
+    unverifiable crossing is never a signal.
+    """
+    weeks = {
+        5: [_row("X", 5, snap_share=0.91)],
+        6: [_row("X", 6, snap_share=0.80)],
+    }
     result = classify(_frames(weeks), week=6)
     disabled = dict(result.disabled_rules)
+
     assert "target_share_step" in disabled
     assert "min_weeks" in disabled["target_share_step"]
+
+    assert not [s for s in result.signals if s.rule_id == "snap_rise_2wk"]
+    assert not [s for s in result.signals if s.direction == ASCENDING]
+    assert "snap_rise_2wk" in disabled
+    assert "min_weeks=3" in disabled["snap_rise_2wk"]
+
+
+def test_snap_rise_needs_a_third_week_to_verify_the_crossing():
+    """The same slide with the verifying week present stays silent, and the
+    rule is NOT disabled — proving the disablement above is about the window,
+    not about the rule being unreachable."""
+    weeks = {
+        4: [_row("X", 4, snap_share=0.88)],
+        5: [_row("X", 5, snap_share=0.91)],
+        6: [_row("X", 6, snap_share=0.80)],
+    }
+    result = classify(_frames(weeks), week=6)
+    assert "snap_rise_2wk" not in dict(result.disabled_rules)
+    assert not [s for s in result.signals if s.rule_id == "snap_rise_2wk"]
+
+
+# --- Staleness guards -----------------------------------------------------
+def test_cold_start_does_not_re_fire_a_player_who_did_not_play_this_week():
+    """GHOST posts a 68% snap week 1 then is inactive week 2. Classifying
+    week 2 must not re-serve his week-1 reading as a week-2 signal."""
+    weeks = {
+        1: [
+            _row("GHOST", 1, snap_share=0.68, target_share=0.14, route_share=0.60),
+            _row("ACTIVE", 1, snap_share=0.30, target_share=0.05, route_share=0.40),
+        ],
+        2: [_row("ACTIVE", 2, snap_share=0.68, target_share=0.14, route_share=0.60)],
+    }
+    result = classify(_frames(weeks), week=2)
+    assert [s for s in result.signals if s.gsis_id == "ACTIVE"]
+    assert not [s for s in result.signals if s.gsis_id == "GHOST"]
+
+
+def test_standard_rules_do_not_re_fire_a_player_who_did_not_play_this_week():
+    """GHOST's weeks 3-5 are a textbook ascension (snaps cross 55%, red-zone
+    touches climb strictly). He is inactive in week 6, so classifying week 6
+    must emit nothing for him — the twin of the cold-start guard."""
+    ghost = {3: (0.30, 1), 4: (0.62, 2), 5: (0.71, 4)}
+    weeks = {
+        w: [_row("GHOST", w, snap_share=snap, rz_touches=rz)]
+        for w, (snap, rz) in ghost.items()
+    }
+    weeks[5].append(_row("GHOST2", 5, snap_share=0.71, rz_touches=4))
+    weeks[6] = [_row("GHOST2", 6, snap_share=0.20, rz_touches=0)]
+
+    result = classify(_frames(weeks), week=6)
+    assert not [s for s in result.signals if s.gsis_id == "GHOST"]
 
 
 def test_classify_rejects_frames_that_do_not_end_at_the_requested_week():

@@ -15,6 +15,7 @@ managed: round numbers tuned on one positive fixture produce 40+ flags a
 week against a 5-move budget.
 """
 
+from collections import Counter
 from collections.abc import Sequence
 
 import structlog
@@ -45,22 +46,24 @@ def _mean(values: Sequence[float]) -> float:
 def _snap_rise_2wk(hist: list[UsageRow]) -> str | None:
     """Snap share above threshold in both of the last two weeks, having been
     at or below it before. The crossing guard is what stops every workhorse
-    in the league from re-firing every week."""
+    in the league from re-firing every week.
+
+    Requires 3 observed weeks (min_weeks=3), not 2: with only two weeks the
+    prior week is unobserved and the crossing cannot be verified, so an
+    established starter sliding 91% -> 80% would fire ASCENDING. That is a
+    falsifiability precondition, not a threshold — an unverifiable crossing
+    is a loud min_weeks disablement, never a wrong-direction signal.
+    """
     last_two = [r.snap_share for r in hist[-2:]]
     if any(v is None or v <= SNAP_THRESHOLD for v in last_two):
         return None
-    if len(hist) >= 3:
-        prior = hist[-3].snap_share
-        if prior is None or prior > SNAP_THRESHOLD:
-            return None
+    prior = hist[-3].snap_share  # guaranteed to exist by min_weeks=3
+    if prior is None or prior > SNAP_THRESHOLD:
+        return None
     return (
         f"snap share {last_two[0]:.0%} -> {last_two[1]:.0%} in wk{hist[-2].week}-"
-        f"wk{hist[-1].week}, both above {SNAP_THRESHOLD:.0%}"
-        + (
-            f" (was {hist[-3].snap_share:.0%} in wk{hist[-3].week})"
-            if len(hist) >= 3
-            else "; no earlier week observed, so the crossing is unverified"
-        )
+        f"wk{hist[-1].week}, both above {SNAP_THRESHOLD:.0%} "
+        f"(was {prior:.0%} in wk{hist[-3].week})"
     )
 
 
@@ -119,11 +122,12 @@ STANDARD_RULES = (
     Rule(
         rule_id="snap_rise_2wk",
         direction=ASCENDING,
-        min_weeks=2,
+        min_weeks=3,  # 2 scored weeks + 1 prior week to verify the crossing
         requires=frozenset({"snap_share"}),
         cold_start=False,
         describe=(
             f"snap share > {SNAP_THRESHOLD:.0%} in the last 2 OBSERVED weeks, newly crossed "
+            "vs a third observed week before them "
             "(a missed or incomplete week is skipped, not treated as zero)"
         ),
     ),
@@ -198,15 +202,31 @@ def classify(frames: Sequence[UsageFrame], week: int) -> TrendResult:
         cs_signals, cs_disabled = evaluate_cold_start(
             histories, available, len(frames), week
         )
+        # The disabled_rules contract is "every catalogued rule that did not
+        # run is named with a reason" (R27). In weeks 1-3 the ENTIRE standard
+        # catalogue is skipped, so it has to announce itself here — otherwise
+        # a reader of a week-2 report sees four rules that simply vanished and
+        # cannot tell suppression from a silent bug.
+        cs_disabled = cs_disabled + [
+            (
+                rule.rule_id,
+                "cold-start mode: standard catalogue inactive through "
+                f"week {COLD_START_MAX_WEEK}",
+            )
+            for rule in STANDARD_RULES
+        ]
         return TrendResult(
             season=frames[-1].season,
             week=week,
             signals=tuple(cs_signals),
-            disabled_rules=tuple(cs_disabled),
+            disabled_rules=tuple(sorted(cs_disabled)),
         )
 
     signals: list[TrendSignal] = []
     disabled: list[tuple[str, str]] = []
+    # NOTE: this loop is intentionally duplicated in coldstart.py:evaluate_cold_start
+    # — a fix here almost certainly applies there; extraction to a shared
+    # _engine leaf is a Plan 2 decision (needs ARCHITECTURE §1b row).
     for rule in STANDARD_RULES:
         missing = sorted(rule.requires - available)
         if missing:
@@ -224,6 +244,10 @@ def classify(frames: Sequence[UsageFrame], week: int) -> TrendResult:
             continue
         fn = _STANDARD_FNS[rule.rule_id]
         for gsis_id, hist in histories.items():
+            # hist[-1].week != week => the player has no complete row THIS week
+            # (inactive, or his team-week failed the completeness floor): skip
+            # rather than re-fire last week's reading. Twin of the guard in
+            # coldstart.py:evaluate_cold_start.
             if len(hist) < rule.min_weeks or hist[-1].week != week:
                 continue
             evidence = fn(hist)
@@ -240,15 +264,11 @@ def classify(frames: Sequence[UsageFrame], week: int) -> TrendResult:
             )
     for rule_id, reason in disabled:
         log.warning("usage.rule_disabled", week=week, rule_id=rule_id, reason=reason)
-    for s in signals:
-        log.info(
-            "usage.signal",
-            week=week,
-            gsis_id=s.gsis_id,
-            direction=s.direction,
-            rule_id=s.rule_id,
-            evidence=s.evidence,
-        )
+    # One line per rule, not per signal: a 40-flag week would otherwise bury
+    # the disablement warnings above it. Per-signal evidence stays on the
+    # TrendResult, which is the auditable artefact (ADR Domain 5).
+    for rule_id, count in sorted(Counter(s.rule_id for s in signals).items()):
+        log.info("usage.signals", week=week, rule_id=rule_id, count=count)
     signals.sort(key=lambda s: (s.gsis_id, s.rule_id))
     return TrendResult(
         season=frames[-1].season,
