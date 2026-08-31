@@ -144,7 +144,7 @@ topological sort (order below is a valid topological order; every edge points st
 - `scripts/ingest_sleeper_trending.py` → `ingest/`, `db`
 - other `scripts/*` → any `src/ffi` module
 
-**Topological order (acyclic proof — 21 nodes, 82 directed edges, verified by topological sort):**
+**Topological order (acyclic proof — 21 nodes, 81 directed edges, verified by topological sort):**
 `db` → `ids` → `yahoo_client` → `health` → `flags` → `joblock` → `ingest/gates` → `ingest` → `scoring` →
 `valuation` → `history` → `sim` → `draft` → `breakout` → `signals_apply` → `usage` →
 `league_state` → `waiver` → `trade_angles` → `reports` → `scripts/*`.
