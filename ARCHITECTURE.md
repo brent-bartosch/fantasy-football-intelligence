@@ -245,7 +245,7 @@ exist are provisional in *name and shape only* — the semantics are fixed by th
 | League state read/write | `load_transactions(week) -> list[Transaction]`, `load_rosters(as_of) -> list[RosterRow]`, `record(rows, source, ts_precision) -> None` | `src/ffi/league_state/adapter.py` |
 | Capture ingestion | `parse_capture(path) -> list[Transaction]` — the only screenshot/text parser | `src/ffi/league_state/manual.py` |
 | Usage table build | `build_usage_weekly(conn, season: int, week: int) -> UsageFrame` (carries `games_complete`, `teams_observed`); `store_usage_weekly(conn, frame) -> int`; `load_usage_weekly(conn, season, week) -> UsageFrame` | `src/ffi/usage/build.py` |
-| Trend classification | `classify(usage: UsageFrame, week: int) -> TrendResult` (ASCENDING / FALLING / WATCH + evidence lines + rule IDs) | `src/ffi/usage/trends.py` |
+| Trend classification | `classify(frames: Sequence[UsageFrame], week: int) -> TrendResult` — frames oldest-to-newest ending at `week` (ASCENDING / FALLING / WATCH + evidence lines + rule IDs; weeks 1-3 run `ffi.usage.coldstart.COLD_START_RULES`) | `src/ffi/usage/trends.py` |
 | Market overlay / urgency | `urgency(signal, market) -> float \| Refusal` — fails closed when either input's gate failed | `src/ffi/usage/market.py` |
 | Roster cutline | `cutline(roster, position) -> CutlineRow` | `src/ffi/waiver/cutline.py` |
 | Priority pricing | `price(claim, priority_pos: int, weeks_remaining: int) -> Decision` (claim / wait / skip) — finite-horizon expiring-option stopping rule | `src/ffi/waiver/priority.py` |
@@ -359,3 +359,8 @@ if it parses zero rules, but not if it parses one fewer than you wrote.
    and never returns a `last_success_at` timestamp, so a `(datetime, datetime)`
    signature would force every caller to reconstruct one. Semantics
    (three states, age-aware, config-driven) are unchanged.
+7. §4's `classify(usage: UsageFrame, week)` was provisional. Resolved during
+   writing-plans to `classify(frames: Sequence[UsageFrame], week)`: every
+   standard rule has `min_weeks >= 2` (2 to 4), so a single-week frame cannot
+   carry the history any of them needs. Only `snap_rise_1wk_cs` runs on one
+   week, and it emits WATCH, never ASCENDING. Semantics unchanged.
