@@ -84,7 +84,7 @@ for `scripts/check_file_size.sh` — keep the third column purely numeric.
 | Path | Contract |
 |---|---|
 | `config/source_clock.yaml` | Per source: expected interval, expected lag window, deadline, owner. Committed, `as_of`-stamped. Read ONLY by `src/ffi/health.py` |
-| `config/league_clock.yaml` | Observed waiver processing hour, drop→clear state machine, roster locks, trade/playoff deadlines, tz-aware, `as_of`-stamped. Read ONLY by `src/ffi/league_state/clock.py`. Initial contents come from the P3 observed-mechanics tests |
+| `config/league_clock.yaml` | Observed waiver processing hour, drop→clear state machine, roster locks, trade/playoff deadlines, tz-aware, `as_of`-stamped. Read at runtime ONLY by `src/ffi/league_state/clock.py`; `scripts/validate_league_clock.py` reads it for validation only and derives nothing. Initial contents come from the P3 observed-mechanics tests; UNSET / `<field>_verified: false` markers are enforced by that validator |
 | `config/modules.yaml` | Per-module enable flags (`usage_trends`, `waiver_advisor`, `trade_angles`, `push`). Read ONLY by `src/ffi/flags.py`. Disabled sections render `OFF (disabled <date>)`, never vanish |
 | `league_rules.md` | Gets an `as_of` header; its transaction/waiver/playoff fields become machine-readable config that modules read directly (R16). No module re-transcribes prose |
 | `reports/` | Output artifacts only (`claims-*.md`, `trends-*.md`, `briefing-*.md`). No Python lives here; renderers live in `src/ffi/reports/` |

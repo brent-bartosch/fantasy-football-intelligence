@@ -1,0 +1,51 @@
+# config/league_clock.yaml — the league's own clock (ADR Domain 2).
+#
+# Read at runtime ONLY by src/ffi/league_state/clock.py (Plan 2) and, for
+# validation only, by scripts/validate_league_clock.py. Every scheduled job
+# time is DERIVED from a deadline in this file rather than hardcoded, so a
+# cadence/deadline mismatch is a config error someone can see instead of a
+# structural defeat (R2, L8xI9=72 — the largest addressable risk in the
+# register).
+#
+# TWO MARKER CONVENTIONS, both enforced by scripts/validate_league_clock.py:
+#   value `UNSET`            -> not yet observed; P3 must fit it from data
+#   `<field>_verified: false` -> transcribed from league_rules.md but NOT
+#                                diffed against the live 2026 settings page
+#
+# Consuming either kind of field from src/ or scripts/ fails the validator
+# (exit 1). Fail-closed: window-2 clear-time alerting stays disabled until
+# clear_award_mechanism is observed (ADR Domain 1).
+as_of: 2026-08-31
+source: league_rules.md (dated 2025) — NOT yet diffed against the live 2026 settings page (R16)
+timezone: America/Los_Angeles
+
+# --- Populated from league_rules.md, structurally stable ---------------------
+league_id: 326814
+teams: 12
+waiver_type: continual_rolling_list
+waivers_process_day: tuesday        # "Weekly Waivers: Game Time - Tuesday"
+waiver_period_days: 1               # "Waiver Time: 1 day"
+weekly_acquisition_limit: 5         # "Weekly Acquisitions: Maximum 5"
+season_acquisition_limit: 65        # "Season Acquisitions: Maximum 65"
+ir_direct_add: false                # "IR Direct Add: No"
+season_first_game_date: 2026-09-10  # Thursday after Labor Day 2026
+
+# --- P3 OBSERVED MECHANICS — must be fitted from the 2025 transaction log ----
+# These are NOT settings-page readings. R4: "drop + 1 day" is likely a batch
+# boundary, not arithmetic, and the post-clear award may be priority rather
+# than FCFS — which would collapse window 2 into window 1 entirely.
+waiver_processing_hour: UNSET       # local hour claims actually process (R2)
+clear_award_mechanism: UNSET        # fcfs | rolling_priority (R4)
+weekend_drop_clear_behavior: UNSET  # does a Sunday drop clear Monday, or wait for the Tuesday batch?
+move_count_reset_boundary: UNSET    # when the weekly 5-move counter resets (R21)
+
+# --- Transcribed from a 2025 document; NOT verified against 2026 -------------
+# league_rules.md literally says "Trade Deadline: November 22, 2025". The
+# 2026 value is an inference. A commissioner change at renewal poisons the
+# ledger, the clear math and the priority model simultaneously (R16).
+trade_deadline: 2026-11-22
+trade_deadline_verified: false
+playoff_weeks: [15, 16, 17]
+playoff_weeks_verified: false
+playoff_teams: 6
+playoff_teams_verified: false
