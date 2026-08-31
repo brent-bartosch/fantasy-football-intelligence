@@ -5012,18 +5012,22 @@ Fill these in as the plan executes. They are the plan's output, not decoration �
 
 | Item | Recorded by | Value |
 |---|---|---|
-| P2 first archive date | Task 1 Step 8 | _(YYYY-MM-DD of the first `raw.sleeper_trending` row)_ |
-| nflverse backfill row count | Task 2 Step 10 | _(row_count from the ingest_runs row)_ |
-| P3 observed mechanics | Task 5 Step 7 | _(recorded / deferred to Plan 2 — and the operator's exact choice)_ |
-| Sanity-gate first-run outcome | Task 6 Step 13 | _(success / sanity_warned + the error text)_ |
-| snap-counts backfill coverage | Task 7 Step 8 | _(rows and mean offense_pct per season)_ |
-| usage_weekly smoke: teams_observed / incomplete rows | Task 8 Step 9 | _(should be 32 / 0 for 2025 wk3)_ |
-| Trend-engine flag count, 2025 wk6 | Task 9 Step 7 | _(count + rule_id histogram — the R10 baseline Plan 2's precision gate must beat)_ |
+| P2 first archive date | Task 1 Step 8 | **2026-08-31** — `run_id=66`, 100 `add` + 100 `drop` rows (Sleeper caps `limit` at 100 regardless of the value sent, so 100 is the real ceiling, not a thin day). |
+| nflverse backfill row count | Task 2 Step 10 | **129,812** — `run_id=67`, `status=success` (full-history `player_week` backfill). |
+| P3 observed mechanics | Task 5 Step 7 | **DEFERRED — no operator choice recorded.** The 7 `UNSET`/`UNVERIFIED` fields in `config/league_clock.yaml` (`clear_award_mechanism`, `move_count_reset_boundary`, `playoff_teams`, `playoff_weeks`, `trade_deadline`, `waiver_processing_hour`, `weekend_drop_clear_behavior`) are still unrecorded as of 2026-08-31. `scripts/validate_league_clock.py` passes only because none of them is consumed; window-2 clear-time alerting stays disabled by construction until P3 lands. **Open item for the operator — carries into Plan 2.** |
+| Sanity-gate first-run outcome | Task 6 Step 13 | **success on both feeds, no warns.** `run_id=69 sleeper_trending success 200`, `run_id=68 sleeper_projections success 3303`; no `sanity_warned`, no `sanity_failed`. The projections gate ran the real correlation path (`rho = 1.0` against run 65); the trending gate ran coverage only — day one, so `_prior_add_rows` returned `None`. |
+| snap-counts backfill coverage | Task 7 Step 8 | **48,446 rows / 7 seasons (2019-2025)**, mean `offense_pct` **0.452-0.471** per season (2019 0.471 · 2020 0.452 · 2021 0.454 · 2022 0.460 · 2023 0.462 · 2024 0.463 · 2025 0.460); `pfr_id`→`gsis_id` match rate **0.9982** overall, worst season 0.9974 (floor 0.90). |
+| usage_weekly smoke: teams_observed / incomplete rows | Task 8 Step 9 | **32 / 0** for 2025 wk3, as predicted — 1,102 rows, `disabled ('route_share', 'rz_touches')`. |
+| Trend-engine flag count, 2025 wk6 | Task 9 Step 7 | **55 signals** — `{target_share_step: 36, snap_rise_2wk: 19}`. Standard weeks run **~33-69/week**; cold-start wk2/wk3 run **220/224** (`snap_rise_1wk_cs`, `target_share_step_cs`). `disabled_rules` at wk6: `route_collapse` and `rz_climb_3wk` (both need `route_share`/`rz_touches`, absent in Plan 1) — **so Plan 1 emits ASCENDING/WATCH only; there is no FALLING direction to measure until a route feed lands.** Against a ~5-move weekly budget this is the R10 flood, untuned. This is the pre-tuning baseline Plan 2's precision gate must beat. |
 | **P4 ceiling `delta_pp`** | Task 10 Step 8 | **+29.07pp**, 95% CI **[+26.28, +31.85]**, `n_cells` = **1500** (3 gate seasons × 500 drafts). Reproduce: `uv run python scripts/waiver_ceiling_test.py --n-drafts 500`. |
 | **P4 decision** | Task 10 Step 8 | **BUILD Plans 3-4** — the 8.0pp cut threshold is cleared 3.6×, and the whole 95% CI sits above it. **Caveat:** this is an ORACLE bound (perfect knowledge of every player's exact weekly score), not the share a realistic advisor recovers; P4 says the headroom is not small, it does not say Plans 3-4 capture it. Playoff probability also saturates (foresight = 1.000 in 1500/1500), so the all-play view (0.5788 → 0.9622) is the non-degenerate signal. Per-cell evidence: `logs/waiver-ceiling-2026-08-31-fixed-n500-cells.json` (tracked). |
-| `pmset` confirmed | Task 11 Step 1 | _(output of `pmset -g sched`)_ |
-| `FFI_BACKUP_REMOTE` destination | Task 11 Step 10 | _(USER INPUT REQUIRED — the operator's chosen offsite target, or "still unset")_ |
-| Final guard + test counts | Task 12 Step 4 | _(file count, test count)_ |
+| `pmset` confirmed | Task 11 Step 1 | **NOT confirmed — requires sudo.** `pmset -g sched` shows two transient system wakes and **no `Repeating power events:` block**; `sudo -n pmset repeat wakeorpoweron MTWRFSU 02:25:00` returned `sudo: a password is required` (rc=1). The wake schedule is prevention only — Task 4's artifact-freshness assertion is the detector and is already live, so a slept-through night is visible either way. **Operator action: run `sudo pmset repeat wakeorpoweron MTWRFSU 02:25:00` and re-check.** |
+| `FFI_BACKUP_REMOTE` destination | Task 11 Step 10 | **Still unset.** `scripts/backup_db.sh` reads `${FFI_BACKUP_REMOTE:-}` and no-ops with `WARN: FFI_BACKUP_REMOTE unset — backups are LAPTOP-ONLY (R28, RPO 24h)`. The `.env.example` placeholder line ships in Task 12's commit (it was blocked by the pre-commit denylist's `\.env(\.\|$)` pattern until Task 12 added the `.env.example` exemption). **USER INPUT REQUIRED — the operator's offsite target has not been chosen.** |
+| Final guard + test counts | Task 12 Step 4 | **All green on 2026-08-31.** `check_file_size.sh` OK — **138** Python files within budget (default 600). `check_import_boundaries.py` OK — 138 files clean against 21 parsed rules + 4 hard-coded rules, 20 grandfathered paths. `check_no_secrets.sh` OK. `validate_league_clock.py` OK — 7 fields still UNSET/UNVERIFIED, none consumed. `uv run pytest -q` — **661 passed, 1 skipped**. `scripts/morning_chain.sh` end-to-end: **rc=0**, all 8 steps rc=0, briefing rendered last (`reports/briefing-2026-08-31.md`, no red flags). |
+
+Rows above are transcribed by Task 12 from each owning task's report under `.superpowers/sdd/` (the
+owning tasks recorded their measurements there but did not write back to this table). The Task 10 P4
+rows were filled by Task 10 itself.
 
 ## Handoff to Plan 2
 

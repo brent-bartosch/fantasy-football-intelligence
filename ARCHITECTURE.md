@@ -322,15 +322,31 @@ exist are provisional in *name and shape only* — the semantics are fixed by th
 
 | Script | Checks | Status on 2026-08-31 |
 |---|---|---|
-| `scripts/check_file_size.sh` | §1 budgets + §5 default 600 over `src/` and `scripts/` | PASS — 123 files |
-| `scripts/check_import_boundaries.py` | §3 parsed rules (21) + 4 hard-coded rules (R-HTTP, R-PGCONN, R-EXCEPT, R-CAPTURE) | PASS — 123 files, 20 grandfathered paths |
+| `scripts/check_file_size.sh` | §1 budgets + §5 default 600 over `src/` and `scripts/` | PASS — 138 files |
+| `scripts/check_import_boundaries.py` | §3 parsed rules (21) + 4 hard-coded rules (R-HTTP, R-PGCONN, R-EXCEPT, R-CAPTURE) | PASS — 138 files, 20 grandfathered paths |
 | `scripts/check_no_secrets.sh` | `.env.example` field-names-only, no committed ntfy topic URL, `.gitignore` covers `.env` / `config/yahoo_token.json` / `data/captures/` | PASS |
+| `scripts/validate_league_clock.py` | no `UNSET`/`UNVERIFIED` field in `config/league_clock.yaml` is consumed by a module | PASS — 7 fields unset, none consumed |
 
-Run all three before every commit and in CI:
+Run all four before every commit and in CI:
 
 ```bash
-bash scripts/check_file_size.sh && python3 scripts/check_import_boundaries.py && bash scripts/check_no_secrets.sh
+bash scripts/check_file_size.sh && python3 scripts/check_import_boundaries.py && bash scripts/check_no_secrets.sh && python3 scripts/validate_league_clock.py
 ```
+
+These are wired to run automatically on every commit. `.git/hooks/` is not tracked by git, so hook
+logic living there cannot be reviewed, cannot be diffed, and silently differs between clones.
+Therefore `.git/hooks/pre-commit` is a two-line shim that `exec`s **`scripts/pre-commit.sh`**, which
+is versioned and is the only place checks may be added. It runs the secret-path denylist first
+(cheapest, and the one that catches a `git add -f` of a credential) and then the four guards above.
+A fresh clone arms it with:
+
+```bash
+printf '#!/usr/bin/env bash\nexec bash "$(git rev-parse --show-toplevel)/scripts/pre-commit.sh"\n' > .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```
+
+The denylist exempts `.env.example` from its `\.env(\.|$)` pattern: that file is tracked on purpose
+(§1c) and `check_no_secrets.sh` is what enforces it holds field names only.
 
 `python3 scripts/check_import_boundaries.py --list-debt` prints the grandfather allowlist. The list is
 allowed to shrink and never to grow; new files get no grace.
