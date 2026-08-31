@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 import requests
 import structlog
 
-from ffi.ingest.base import BaseIngester, IngestError
+from ffi.ingest.base import Baseline, BaseIngester, IngestError, baseline_label
 from ffi.ingest.gates import (
     check_fieldset,
     check_nonzero_coverage,
@@ -150,26 +150,43 @@ class SleeperTrendingIngester(BaseIngester):
             total += len(rows)
         return total
 
-    def _prior_add_rows(self, conn) -> list | None:
-        """The `add` payload from the most recent EARLIER archive day.
+    @staticmethod
+    def _today() -> datetime.date:
+        return datetime.datetime.now(datetime.timezone.utc).astimezone(LEAGUE_TZ).date()
+
+    def _prior_add_rows(self, conn) -> Baseline | None:
+        """The `add` payload from the most recent EARLIER SUCCESSFUL archive day.
 
         Strictly earlier, not `<=`: a same-day retry must not correlate
         against the snapshot it is retrying.
+
+        Successful, not merely present: this feed is permanently observe-and-
+        log (R8 — the archive is unrecoverable, so a suspect day is stored
+        anyway), which means a warned day is sitting in the table looking
+        exactly like a clean one. Using it as tomorrow's baseline would
+        re-normalize the gate onto the very drift it flagged: the field-set
+        would match, the ordering would match, and the second day of a real
+        break would report clean. The `add` rows are joined back to their run,
+        and only 'success' runs are eligible. (The rows carry `run_id`
+        directly — no timestamp correlation needed.)
         """
-        today = (
-            datetime.datetime.now(datetime.timezone.utc).astimezone(LEAGUE_TZ).date()
-        )
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT payload FROM raw.sleeper_trending "
-                "WHERE trend_type='add' AND archive_date < %s "
-                "ORDER BY archive_date DESC, snapshot_id DESC LIMIT 1",
-                (today,),
+                "SELECT t.payload, t.run_id, t.archive_date "
+                "FROM raw.sleeper_trending t "
+                "JOIN raw.ingest_runs r ON r.run_id = t.run_id "
+                "WHERE t.trend_type='add' AND t.archive_date < %s "
+                "AND r.status = 'success' "
+                "ORDER BY t.archive_date DESC, t.snapshot_id DESC LIMIT 1",
+                (self._today(),),
             )
             row = cur.fetchone()
-        return None if row is None else row[0]
+        if row is None:
+            return None
+        rows, run_id, archive_date = row
+        return Baseline(rows=rows, run_id=run_id, at=archive_date)
 
-    def sanity_check(self, conn, payload) -> None:
+    def sanity_check(self, conn, payload) -> float | None:
         adds = payload["add"]
         check_nonzero_coverage(
             adds,
@@ -177,23 +194,24 @@ class SleeperTrendingIngester(BaseIngester):
             value_key="count",
             min_players=self.MIN_POSITIVE_COUNTS,
         )
-        prior_rows = self._prior_add_rows(conn)
-        if prior_rows is None:
-            return  # day one: nothing to compare against
+        baseline = self._prior_add_rows(conn)
+        if baseline is None:
+            return None  # day one: nothing to compare against
+        # Name the baseline day in every message: with warned days skipped the
+        # comparison may span a gap, and "vs prior snapshot" would hide that.
+        feed = baseline_label(self.source, baseline, self._today())
         # Union across all rows, not row[0]: a key that appears on (or
         # vanishes from) record 40 alone is invisible to a single-record
         # comparison, and nothing guarantees Sleeper's rows stay uniform.
-        check_fieldset(union_keys(prior_rows), union_keys(adds), feed=self.source)
+        check_fieldset(union_keys(baseline.rows), union_keys(adds), feed=feed)
         # Uncoerced on purpose — check_rank_correlation floats behind its own
         # guard, so a non-numeric count fails as a named gate error.
-        prior = {rec["player_id"]: rec["count"] for rec in prior_rows}
+        prior = {rec["player_id"]: rec["count"] for rec in baseline.rows}
         curr = {rec["player_id"]: rec["count"] for rec in adds}
-        check_rank_correlation(prior, curr, feed=self.source)
+        return check_rank_correlation(prior, curr, feed=feed)
 
     def store(self, conn, run_id: int, payload) -> None:
-        archive_date = (
-            datetime.datetime.now(datetime.timezone.utc).astimezone(LEAGUE_TZ).date()
-        )
+        archive_date = self._today()
         with conn.cursor() as cur:
             for trend_type in TREND_TYPES:
                 cur.execute(

@@ -1,9 +1,10 @@
+import datetime
 import json
 
 import requests
 import structlog
 
-from ffi.ingest.base import BaseIngester, IngestError
+from ffi.ingest.base import Baseline, BaseIngester, IngestError, baseline_label
 from ffi.ingest.gates import (
     check_fieldset,
     check_nonzero_coverage,
@@ -38,11 +39,14 @@ class SleeperProjectionsIngester(BaseIngester):
     # one poisons valuation, the board and every downstream recommendation, so
     # refusing to store is strictly cheaper than storing wrong (ADR D1).
     # SOAK: warn until 2026-09-08 — fit correlation floor from a week of
-    # observed rho in ingest_runs.error, then flip to "fail" (ADR Domain 1
-    # end-state). The 0.85 floor and the new union field-set check have never
-    # seen two real consecutive days; hard-failing on an unfitted threshold
-    # would block the morning chain on a guess. Flip = this one literal (or
-    # the sanity_mode= constructor override, which the runner can already use).
+    # observed rho in ingest_runs.sanity_rho (migration 011; written on
+    # passing runs too, which is the half of the distribution a floor is
+    # actually fitted to), then flip to "fail" (ADR Domain 1 end-state). The
+    # 0.85 floor and the new union field-set check have never seen two real
+    # consecutive days; hard-failing on an unfitted threshold would block the
+    # morning chain on a guess. Flip = this one literal (or the sanity_mode=
+    # constructor override, exposed by scripts/ingest_sleeper.py
+    # --sanity-mode for a one-off run).
     sanity_mode = "warn"
 
     # `pts_ppr` and not `adp_2qb`: adp_2qb is the field with KNOWN cohort
@@ -191,8 +195,8 @@ class SleeperProjectionsIngester(BaseIngester):
                 (run_id, self.season, self.week, json.dumps(payload)),
             )
 
-    def _prior_payload(self, conn) -> list | None:
-        """The most recent earlier snapshot for THIS (season, week) scope.
+    def _prior_payload(self, conn) -> Baseline | None:
+        """The most recent earlier SUCCESSFUL snapshot for this (season, week).
 
         `week IS NOT DISTINCT FROM %s`, not a hard-coded `week IS NULL`: the
         season-level payload (week NULL) and a week-N payload are different
@@ -202,17 +206,30 @@ class SleeperProjectionsIngester(BaseIngester):
         weekly run while never actually gating week-5 drift. `IS NOT DISTINCT
         FROM` rather than `=` because `week = NULL` matches nothing, which is
         how a season-level run would silently lose its own baseline.
+
+        The join to raw.ingest_runs is what keeps the gate honest in warn
+        mode: a warned run STILL STORES its payload, so yesterday's suspect
+        snapshot would otherwise become today's baseline and the gate would
+        quietly re-normalize onto the drift it just flagged — one bad day
+        would be enough to blind the check permanently. Only 'success' runs
+        are eligible; the join also subsumes the old `run_id IS NOT NULL`.
         """
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT payload FROM raw.sleeper_projections "
-                "WHERE week IS NOT DISTINCT FROM %s AND season IS NOT DISTINCT FROM %s "
-                "AND run_id IS NOT NULL "
-                "ORDER BY snapshot_id DESC LIMIT 1",
+                "SELECT p.payload, p.run_id, p.fetched_at "
+                "FROM raw.sleeper_projections p "
+                "JOIN raw.ingest_runs r ON r.run_id = p.run_id "
+                "WHERE p.week IS NOT DISTINCT FROM %s "
+                "AND p.season IS NOT DISTINCT FROM %s "
+                "AND r.status = 'success' "
+                "ORDER BY p.snapshot_id DESC LIMIT 1",
                 (self.week, self.season),
             )
             row = cur.fetchone()
-        return None if row is None else row[0]
+        if row is None:
+            return None
+        payload, run_id, fetched_at = row
+        return Baseline(rows=payload, run_id=run_id, at=fetched_at.date())
 
     @staticmethod
     def _stats(payload) -> list[dict]:
@@ -229,26 +246,31 @@ class SleeperProjectionsIngester(BaseIngester):
             if self.RANK_KEY in rec.get("stats", {})
         }
 
-    def sanity_check(self, conn, payload) -> None:
+    def sanity_check(self, conn, payload) -> float | None:
         check_nonzero_coverage(
             self._stats(payload),
             feed=self.source,
             value_key=self.RANK_KEY,
             min_players=self.MIN_RANKED,
         )
-        prior = self._prior_payload(conn)
-        if prior is None:
-            return  # first snapshot of this scope: nothing to compare against
+        baseline = self._prior_payload(conn)
+        if baseline is None:
+            return None  # first snapshot of this scope: nothing to compare to
+        # Every gate message below names the baseline run/date (and flags it
+        # when stale) — with success-preferring selection the comparison is no
+        # longer necessarily against yesterday, so "drift vs prior snapshot"
+        # on its own would be unactionable.
+        feed = baseline_label(self.source, baseline, datetime.date.today())
         # Union of stats keys across every record, not record[0]'s: the
         # adp_2qb disappearance is precisely a key that goes missing from part
         # of the payload, and Sleeper's records are ragged (deep-bench entries
         # carry ADP metadata only), so record[0] is not representative of
         # anything. The union is the only stable field-set this feed has.
         check_fieldset(
-            union_keys(self._stats(prior)),
+            union_keys(self._stats(baseline.rows)),
             union_keys(self._stats(payload)),
-            feed=self.source,
+            feed=feed,
         )
-        check_rank_correlation(
-            self._ranked(prior), self._ranked(payload), feed=self.source
+        return check_rank_correlation(
+            self._ranked(baseline.rows), self._ranked(payload), feed=feed
         )

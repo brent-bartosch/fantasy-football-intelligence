@@ -236,6 +236,99 @@ def test_identical_field_union_passes_the_gate(db):
         assert cur.fetchone()[0] == "success"
 
 
+def _run_row(db, run_id):
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT status, error, sanity_rho FROM raw.ingest_runs WHERE run_id=%s",
+            (run_id,),
+        )
+        return cur.fetchone()
+
+
+def _age_archive(db, days: int):
+    """Backdate the whole stored archive by `days` (both directions)."""
+    with db.cursor() as cur:
+        cur.execute(
+            "UPDATE raw.sleeper_trending "
+            "SET archive_date = archive_date - make_interval(days => %s)",
+            (days,),
+        )
+    db.commit()
+
+
+def test_passing_day_records_the_measured_rho(db):
+    """Same soak instrumentation as projections: rho on the days that pass."""
+    FixtureIngester(_payload()).run(db)
+    _backdate(db)
+    run_id = FixtureIngester(_payload()).run(db)
+    status, error, rho = _run_row(db, run_id)
+    assert (status, error) == ("success", None)
+    assert rho == pytest.approx(1.0)
+
+
+def test_warned_day_is_not_used_as_the_next_days_baseline(db):
+    """R8 forces this feed to archive suspect days — so they sit in the table
+    looking exactly like clean ones. If a warned day could be a baseline, the
+    gate would re-normalize onto the drift it flagged and the SECOND day of a
+    real break would report clean."""
+    clean = FixtureIngester(_payload()).run(db)
+    _backdate(db)  # the clean day is now "yesterday"
+
+    drifted = _payload()
+    drifted["add"][40]["trend_score"] = 0.5
+    warned = FixtureIngester(drifted).run(db)
+    assert _run_row(db, warned)[0] == "sanity_warned"
+
+    # Move both stored days back one so "today" is free again: yesterday is
+    # now the WARNED day, the day before is the clean one.
+    _backdate(db)
+    baseline = SleeperTrendingIngester()._prior_add_rows(db)
+    assert baseline.run_id == clean
+
+    # End-to-end: today's payload carries the same drifted key as yesterday's
+    # warned archive. Against the clean baseline it must still fire.
+    run_id = FixtureIngester(drifted).run(db)
+    status, error, _ = _run_row(db, run_id)
+    assert status == "sanity_warned"
+    assert "added=['trend_score']" in error
+
+
+def test_gate_message_names_the_baseline_archive_date(db):
+    baseline_run = FixtureIngester(_payload()).run(db)
+    _backdate(db)
+    baseline_day = datetime.datetime.now(datetime.timezone.utc).astimezone(
+        LEAGUE_TZ
+    ).date() - datetime.timedelta(days=1)
+
+    drifted = _payload()
+    drifted["add"][7]["trend_score"] = 0.5
+    run_id = FixtureIngester(drifted).run(db)
+    status, error, _ = _run_row(db, run_id)
+    assert status == "sanity_warned"
+    assert f"baseline run {baseline_run}" in error
+    assert baseline_day.isoformat() in error
+    assert "STALE BASELINE" not in error
+
+
+def test_stale_baseline_note_appears_but_never_fails_the_run(db):
+    """A 10-day-old baseline means the archive has a gap — say so on the
+    message, but the staleness itself must not warn or fail anything."""
+    FixtureIngester(_payload()).run(db)
+    _age_archive(db, 10)
+
+    drifted = _payload()
+    drifted["add"][7]["trend_score"] = 0.5
+    run_id = FixtureIngester(drifted).run(db)
+    status, error, _ = _run_row(db, run_id)
+    assert status == "sanity_warned"
+    assert "STALE BASELINE: 10d old" in error
+    assert "added=['trend_score']" in error
+
+    # A stale baseline with a clean payload is still a clean run.
+    clean = FixtureIngester(_payload()).run(db)
+    assert _run_row(db, clean)[0] == "success"
+
+
 def test_non_numeric_count_fails_as_a_named_gate_error(db):
     """A count that arrives as a string is type drift, and must surface as a
     gate error naming the record — not a bare ValueError from a comprehension."""

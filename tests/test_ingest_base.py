@@ -84,6 +84,51 @@ def test_hard_fail_mode_records_sanity_failed_and_never_stores(db):
     assert "deliberately failing gate" in error
 
 
+class _RhoFailGateIngester(_FailGateIngester):
+    source = "test_gate_rho"
+
+    def sanity_check(self, conn, payload):
+        raise SanityGateError("test_gate_rho: gate tripped at rho", rho=0.42)
+
+
+def test_hard_fail_mode_still_persists_the_measured_rho(db):
+    """Even the run that refused to store keeps its measurement.
+
+    The rho a hard-fail rejected is the single most useful point in the
+    distribution the floor gets fitted from — recording only the verdict
+    would throw it away exactly when it matters (migration 011).
+    """
+    with pytest.raises(SanityGateError):
+        _RhoFailGateIngester().run(db)
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT status, sanity_rho FROM raw.ingest_runs WHERE source='test_gate_rho'"
+        )
+        assert cur.fetchone() == ("sanity_failed", pytest.approx(0.42))
+
+
+class _WarnRhoIngester(GoodIngester):
+    source = "test_gate_warn_rho"
+    sanity_mode = "warn"
+
+    def sanity_check(self, conn, payload):
+        return 0.97  # a passing gate returns its measurement
+
+
+def test_passing_gate_rho_is_persisted_and_a_gateless_run_stays_null(db):
+    warn_run = _WarnRhoIngester().run(db)
+    off_run = GoodIngester().run(db)  # sanity_mode 'off': nothing measured
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT run_id, status, sanity_rho FROM raw.ingest_runs "
+            "WHERE run_id = ANY(%s) ORDER BY run_id",
+            ([warn_run, off_run],),
+        )
+        rows = cur.fetchall()
+    assert rows[0] == (warn_run, "success", pytest.approx(0.97))
+    assert rows[1] == (off_run, "success", None)
+
+
 class _TypoModeIngester(GoodIngester):
     source = "test_typo_mode"
     sanity_mode = "wan"  # typo for 'warn'

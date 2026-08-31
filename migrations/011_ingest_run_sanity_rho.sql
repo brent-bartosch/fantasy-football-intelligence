@@ -1,0 +1,21 @@
+-- 011_ingest_run_sanity_rho.sql — the soak needs its measurement, not just
+-- its verdict (ADR Domain 1, TBD 3).
+--
+-- The >=0.85 rank-correlation floor in ffi.ingest.gates is a guess until it
+-- is fitted from observed week-over-week rho. Before this column the only
+-- place a rho was ever written was `error`, and only on the runs that FAILED
+-- the gate — i.e. the soak recorded the tail and threw away the body of the
+-- distribution, which is precisely the part a floor has to be fitted to.
+--
+-- sanity_rho is therefore written on PASSING runs too (BaseIngester._finish
+-- via the value check_rank_correlation returns), and on warned/failed runs it
+-- carries the rho that tripped the gate (SanityGateError.rho) alongside the
+-- message in `error`. NULL means no correlation was measured on that run:
+-- gate off, no prior baseline, or an earlier gate (coverage / field-set)
+-- raised before the correlation ran.
+--
+-- Fit the floor with, once ~4 weeks exist:
+--   SELECT source, count(*), min(sanity_rho), percentile_cont(0.01)
+--          WITHIN GROUP (ORDER BY sanity_rho)
+--     FROM raw.ingest_runs WHERE sanity_rho IS NOT NULL GROUP BY source;
+ALTER TABLE raw.ingest_runs ADD COLUMN IF NOT EXISTS sanity_rho REAL;

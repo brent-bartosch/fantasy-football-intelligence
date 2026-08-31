@@ -1,6 +1,9 @@
+import datetime
 import json
 import pathlib
+
 import pytest
+
 from ffi.ingest.base import IngestError
 from ffi.ingest.gates import SanityGateError
 from ffi.ingest.sleeper import SleeperProjectionsIngester
@@ -170,7 +173,15 @@ def test_gate_hard_fails_and_stores_nothing_when_pts_ppr_coverage_collapses(db):
 
 
 def test_projections_soak_in_warn_mode_stores_but_flags_the_run(db):
-    """The soak setting itself: same collapsed payload, default mode."""
+    """DELIBERATE TRIPWIRE — delete or invert this test at the 2026-09-08 flip.
+
+    It asserts the SOAK CONFIG (sanity_mode defaults to 'warn'), not a
+    permanent property: the end state for projections is hard-fail. When the
+    soak ends and sleeper.py's literal flips to 'fail', this test must start
+    failing — that is its job. Do not "fix" it by re-pinning the mode; delete
+    it (the hard-fail mechanism is covered by the test above) or invert it to
+    assert 'fail'. Same collapsed payload as that test, default mode.
+    """
 
     class LiveFloorIngester(FixtureIngester):
         MIN_RANKED = SleeperProjectionsIngester.MIN_RANKED
@@ -190,18 +201,25 @@ def test_projections_soak_in_warn_mode_stores_but_flags_the_run(db):
     assert "pts_ppr" in error
 
 
-def _seed_snapshot(db, season, week, payload):
-    """Insert a stored snapshot the way a real successful run leaves one."""
+def _seed_snapshot(db, season, week, payload, *, status="success", days_ago=0):
+    """Insert a stored snapshot the way a real run leaves one.
+
+    `status` is the run's status: a 'sanity_warned' run stores its payload
+    just like a successful one (observe-and-log), which is exactly why the
+    baseline query has to discriminate between them. `days_ago` backdates
+    fetched_at so baseline staleness can be exercised.
+    """
     with db.cursor() as cur:
         cur.execute(
             "INSERT INTO raw.ingest_runs (source, status) "
-            "VALUES ('sleeper_projections','success') RETURNING run_id"
+            "VALUES ('sleeper_projections',%s) RETURNING run_id",
+            (status,),
         )
         run_id = cur.fetchone()[0]
         cur.execute(
-            "INSERT INTO raw.sleeper_projections (run_id, season, week, payload) "
-            "VALUES (%s,%s,%s,%s)",
-            (run_id, season, week, json.dumps(payload)),
+            "INSERT INTO raw.sleeper_projections (run_id, season, week, payload, fetched_at) "
+            "VALUES (%s,%s,%s,%s, now() - make_interval(days => %s))",
+            (run_id, season, week, json.dumps(payload), days_ago),
         )
     db.commit()
     return run_id
@@ -226,15 +244,16 @@ def test_prior_payload_ignores_the_season_level_snapshot_for_a_weekly_run(db):
     week_five = json.loads(json.dumps(FIXTURE))
     for rec in week_five:
         rec["stats"]["pts_ppr"] = 18.0
-    _seed_snapshot(db, 2025, 5, week_five)
+    week_five_run = _seed_snapshot(db, 2025, 5, week_five)
     prior = ing._prior_payload(db)
     assert prior is not None
-    assert {rec["stats"]["pts_ppr"] for rec in prior} == {18.0}
+    assert {rec["stats"]["pts_ppr"] for rec in prior.rows} == {18.0}
+    assert prior.run_id == week_five_run
 
     # A season-level run still finds its own (week IS NULL) baseline: the
     # parameterised `IS NOT DISTINCT FROM` has to match NULL, not drop it.
     season_prior = FixtureIngester(season=2025, week=None)._prior_payload(db)
-    assert {rec["stats"]["pts_ppr"] for rec in season_prior} == {300.0}
+    assert {rec["stats"]["pts_ppr"] for rec in season_prior.rows} == {300.0}
 
 
 def test_prior_payload_ignores_another_season(db):
@@ -302,3 +321,112 @@ def test_projections_gates_pass_on_an_identical_snapshot(db):
     _seed_snapshot(db, 2025, 5, _synthetic())
     run_id = PayloadIngester(_synthetic(), season=2025, week=5).run(db)
     assert _status_and_error(db, run_id) == ("success", None)
+
+
+def _sanity_rho(db, run_id):
+    with db.cursor() as cur:
+        cur.execute("SELECT sanity_rho FROM raw.ingest_runs WHERE run_id=%s", (run_id,))
+        return cur.fetchone()[0]
+
+
+def _reversed(n: int = 30) -> list:
+    """Same players as _synthetic, pts_ppr ordering inverted (rho = -1)."""
+    payload = _synthetic(n)
+    for i, rec in enumerate(payload):
+        rec["stats"]["pts_ppr"] = float(i + 1)
+    return payload
+
+
+def test_passing_run_records_the_measured_rho(db):
+    """The soak's whole point: rho on the runs that PASS.
+
+    Before migration 011 the only rho ever written was the one inside a
+    failing gate's message, so the observed distribution the >=0.85 floor is
+    supposed to be fitted from (ADR TBD 3) consisted entirely of failures.
+    """
+    _seed_snapshot(db, 2025, 5, _synthetic())
+    run_id = PayloadIngester(_synthetic(), season=2025, week=5).run(db)
+    assert _status_and_error(db, run_id) == ("success", None)
+    assert _sanity_rho(db, run_id) == pytest.approx(1.0)
+
+
+def test_warned_run_records_both_the_rho_and_the_message(db):
+    """A tripped gate keeps its measurement, not just its verdict."""
+    _seed_snapshot(db, 2025, 5, _synthetic())
+    run_id = PayloadIngester(_reversed(), season=2025, week=5).run(db)
+    status, error = _status_and_error(db, run_id)
+    assert status == "sanity_warned"
+    assert "rank correlation" in error
+    assert _sanity_rho(db, run_id) == pytest.approx(-1.0)
+
+
+def test_no_baseline_leaves_rho_null_rather_than_a_fake_number(db):
+    """Day one measured nothing; NULL says so. A 0.0 or 1.0 placeholder here
+    would silently drag any percentile fitted off this column."""
+    run_id = PayloadIngester(_synthetic(), season=2025, week=5).run(db)
+    assert _status_and_error(db, run_id) == ("success", None)
+    assert _sanity_rho(db, run_id) is None
+
+
+def test_baseline_skips_a_warned_snapshot_and_uses_the_last_success(db):
+    """A warned day must never become tomorrow's baseline.
+
+    Warn mode STORES the suspect payload, so without the status join the gate
+    would re-normalize onto the drift it just flagged: day two of a real break
+    would compare drift-to-drift and report clean. Here the newest snapshot is
+    a warned one carrying an extra key; the gate must reach past it to the
+    older successful snapshot and therefore still see the field-set drift.
+    """
+    good_run = _seed_snapshot(db, 2025, 5, _synthetic())
+    _seed_snapshot(
+        db, 2025, 5, _synthetic(tail_extra={"adp_2qb": 42.0}), status="sanity_warned"
+    )
+    assert (
+        PayloadIngester(_synthetic(), season=2025, week=5)._prior_payload(db).run_id
+        == good_run
+    )
+
+    # And end-to-end: today's payload matches the WARNED snapshot's field set,
+    # so a naive baseline would pass it. Against the successful baseline it is
+    # drift, and it must fire.
+    run_id = PayloadIngester(
+        _synthetic(tail_extra={"adp_2qb": 42.0}), season=2025, week=5
+    ).run(db)
+    status, error = _status_and_error(db, run_id)
+    assert status == "sanity_warned"
+    assert "added=['adp_2qb']" in error
+
+
+def test_gate_message_names_the_baseline_run_and_date(db):
+    """'drift vs prior snapshot' is unactionable once the baseline can be any
+    earlier successful day rather than simply yesterday."""
+    baseline_run = _seed_snapshot(db, 2025, 5, _synthetic(), days_ago=2)
+    run_id = PayloadIngester(
+        _synthetic(tail_extra={"pass_2pt": 1.0}), season=2025, week=5
+    ).run(db)
+    status, error = _status_and_error(db, run_id)
+    assert status == "sanity_warned"
+    assert f"baseline run {baseline_run}" in error
+    expected_day = (datetime.date.today() - datetime.timedelta(days=2)).isoformat()
+    assert expected_day in error
+    assert "STALE BASELINE" not in error  # 2 days is not stale
+
+
+def test_stale_success_baseline_annotates_the_message_without_failing_the_run(db):
+    """A >7d-old baseline weakens the comparison; it does not invalidate it.
+
+    The note is an annotation on a gate that fired for its own reason — it
+    must never be the thing that fails or warns a run by itself.
+    """
+    _seed_snapshot(db, 2025, 5, _synthetic(), days_ago=30)
+    run_id = PayloadIngester(
+        _synthetic(tail_extra={"pass_2pt": 1.0}), season=2025, week=5
+    ).run(db)
+    status, error = _status_and_error(db, run_id)
+    assert status == "sanity_warned"
+    assert "STALE BASELINE: 30d old" in error
+    assert "added=['pass_2pt']" in error  # the real reason is still there
+
+    # ...and a stale baseline alone, with nothing else wrong, still passes.
+    clean_run = PayloadIngester(_synthetic(), season=2025, week=5).run(db)
+    assert _status_and_error(db, clean_run) == ("success", None)

@@ -20,7 +20,20 @@ DEFAULT_MIN_OVERLAP = 20
 
 
 class SanityGateError(Exception):
-    """A payload passed schema validation but failed a semantic gate."""
+    """A payload passed schema validation but failed a semantic gate.
+
+    `rho` carries the measured rank correlation when the gate that raised is
+    check_rank_correlation, and is None for every other gate. The soak has to
+    fit a floor from observed rho (ADR TBD 3), and the days the gate trips are
+    the most informative days in that distribution — throwing the number away
+    at the moment it is finally interesting would leave the operator with a
+    verdict and no measurement. Callers persist it as
+    raw.ingest_runs.sanity_rho (migration 011).
+    """
+
+    def __init__(self, *args, rho: float | None = None):
+        super().__init__(*args)
+        self.rho = rho
 
 
 _ID_KEYS = ("player_id", "id")
@@ -148,7 +161,8 @@ def check_rank_correlation(
     if rho < min_rho:
         raise SanityGateError(
             f"{feed}: week-over-week rank correlation {rho:.3f} < {min_rho} over "
-            f"{n} shared keys — the ordering changed more than a real feed can"
+            f"{n} shared keys — the ordering changed more than a real feed can",
+            rho=rho,
         )
     return rho
 
