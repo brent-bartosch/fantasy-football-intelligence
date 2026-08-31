@@ -1,6 +1,8 @@
+import dataclasses
+
 import pytest
 
-from ffi.usage import METRICS, UsageFrame, UsageRow
+from ffi.usage import METRICS
 from ffi.usage.build import build_usage_weekly, load_usage_weekly, store_usage_weekly
 
 
@@ -45,10 +47,32 @@ def test_shares_computed_on_a_complete_team_week(db):
     assert all(r.games_complete == 1 for r in frame.rows)
 
 
+def test_low_play_but_fully_published_team_week_still_computes_shares(db):
+    # The KC-week-18 profile: 30 player rows, 22 targets + 15 carries = 37
+    # plays. Under the floor on plays, far over it on players — a real rest
+    # week, fully published. The conjunction must let it through, or ~33
+    # players per incident lose their shares for no reason.
+    rows = [(f"00-000{i:04d}", "KC", "WR", 1, 0) for i in range(22)]
+    rows += [(f"00-000{i:04d}", "KC", "RB", 0, 2) for i in range(22, 29)]
+    rows += [("00-0000029", "KC", "QB", 0, 1)]
+    _seed(db, rows)
+    frame = build_usage_weekly(db, 2025, 3)
+    assert len(frame.rows) == 30
+    by_id = {r.gsis_id: r for r in frame.rows}
+    assert (by_id["00-0000000"].team_targets, by_id["00-0000000"].team_carries) == (
+        22,
+        15,
+    )
+    assert all(r.games_complete == 1 for r in frame.rows)
+    assert by_id["00-0000000"].target_share == pytest.approx(1 / 22)
+    assert by_id["00-0000022"].carry_share == pytest.approx(2 / 15)
+
+
 def test_partial_team_week_refuses_to_compute_shares(db):
-    # 6 targets + 3 carries = 9 plays: nflverse is mid-publish, not the 49ers
-    # having run nine plays. A short denominator here would put one WR at
-    # 100% target share and fire a false ASCENDING for the whole team.
+    # 6 targets + 3 carries = 9 plays across ONE player row: nflverse is
+    # mid-publish, not the 49ers having run nine plays. A short denominator
+    # here would put that WR at 100% target share and fire a false ASCENDING
+    # for the whole team. Both halves of the conjunction trip.
     _seed(db, [("00-0000009", "SF", "WR", 6, 3)])
     frame = build_usage_weekly(db, 2025, 3)
     row = frame.rows[0]
@@ -71,7 +95,10 @@ def test_snap_share_is_kept_on_a_partial_week(db):
 
 
 def test_unavailable_metrics_are_null_and_announced(db):
-    _seed(db, COMPLETE_SF)
+    # Seed a snap row: with an empty snap feed snap_share would also be
+    # disabled (see test_postseason_...), and this test is about the two
+    # metrics that are STRUCTURALLY unavailable in Plan 1.
+    _seed(db, COMPLETE_SF, snaps=[("00-0000001", "SF", "WR", 0.82)])
     frame = build_usage_weekly(db, 2025, 3)
     assert frame.disabled_metrics == ("route_share", "rz_touches")
     assert frame.available_metrics == frozenset(
@@ -137,11 +164,42 @@ def test_postseason_week_builds_without_snap_counts(db):
     assert all(r.games_complete == 1 for r in frame.rows)
     by_id = {r.gsis_id: r for r in frame.rows}
     assert by_id["00-0000001"].target_share == pytest.approx(12 / 34)
+    # An all-NULL column must be announced in the frame, not only in the log:
+    # Task 9 disables a rule by `requires` against available_metrics, so a
+    # snap_share left in there would let a snap rule run over 397 NULLs.
+    assert "snap_share" in frame.disabled_metrics
+    assert "snap_share" not in frame.available_metrics
+    assert frame.available_metrics == frozenset({"target_share", "carry_share"})
+    assert set(METRICS) == frame.available_metrics | set(frame.disabled_metrics)
 
 
-def test_frame_and_row_are_immutable(db):
+def test_null_offense_pct_yields_null_snap_share(db):
+    # The nullable-column deviation: build reads `snaps.get(id) is None`, not
+    # `id not in snaps`. A snap row that EXISTS with a NULL offense_pct is
+    # reachable in the live feed; under `not in` it reaches float(None) and
+    # takes down the whole week's build. _seed can't express this (it
+    # multiplies pct), so insert the NULL directly. Reverting the guard to
+    # `not in` makes this test raise TypeError.
+    _seed(db, COMPLETE_SF, snaps=[("00-0000002", "SF", "WR", 0.55)])
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO raw.nflverse_snap_counts "
+            "(gsis_id, season, week, team, position, offense_snaps, offense_pct) "
+            "VALUES ('00-0000001', 2025, 3, 'SF', 'WR', NULL, NULL)"
+        )
+    db.commit()
+    frame = build_usage_weekly(db, 2025, 3)
+    by_id = {r.gsis_id: r for r in frame.rows}
+    assert by_id["00-0000001"].snap_share is None
+    # The rest of the week is unaffected — one NULL is not a failed build.
+    assert by_id["00-0000002"].snap_share == pytest.approx(0.55)
+    assert by_id["00-0000001"].target_share == pytest.approx(12 / 34)
+
+
+def test_frame_and_row_are_frozen(db):
     _seed(db, COMPLETE_SF)
     frame = build_usage_weekly(db, 2025, 3)
-    assert isinstance(frame, UsageFrame) and isinstance(frame.rows[0], UsageRow)
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         frame.rows[0].target_share = 0.5
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        frame.teams_observed = 99

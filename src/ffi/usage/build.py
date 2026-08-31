@@ -13,7 +13,12 @@ Week coverage: raw.nflverse_player_week carries the postseason (through week
 is therefore a left join in spirit — for weeks 19+ every snap_share is NULL
 while target_share / carry_share compute normally. That mismatch is a known
 feed boundary, not a partial publish, so it does not touch games_complete.
+It does move snap_share out of the frame's available_metrics and into
+disabled_metrics, so every rule that `requires` it is disabled by name
+instead of quietly evaluating an all-NULL column.
 """
+
+import dataclasses
 
 import structlog
 
@@ -21,10 +26,13 @@ from ffi.usage import METRICS, UsageFrame, UsageRow
 
 log = structlog.get_logger()
 
-# A real NFL team-game has ~55-70 (targets + carries). 40 clears every
-# legitimate low-volume game (the lowest 2019-2025 team-game is 44) while
-# tripping on any mid-publish fragment.
+# The floor cannot be a play count alone: over raw.nflverse_player_week
+# 2019-2025 (3,762 team-games) the minimum is 28 and p1 is 40 — 37 fully
+# published team-games (rest weeks, blowouts) sit under 40. Player count is
+# the clean discriminator: the thinnest real team-game has 25 player rows,
+# a mid-publish fragment has single digits. Require BOTH to trip.
 MIN_TEAM_PLAYS = 40
+MIN_TEAM_PLAYERS = 20
 
 # Plan 1 has no participation feed (nflverse coverage ends 2023) and no pbp
 # feed, so these two are structurally unavailable. Declared here, not
@@ -46,10 +54,36 @@ _SNAPS_QUERY = """
     FROM raw.nflverse_snap_counts
     WHERE season = %s AND week = %s
 """
-_LOAD_QUERY = """
-    SELECT gsis_id, season, week, team, position, snap_share, target_share,
-           carry_share, route_share, rz_touches, team_targets, team_carries,
-           games_complete, teams_observed
+# load_usage_weekly reconstitutes rows positionally (UsageRow(*r)), so a field
+# reorder in ffi.usage would silently shift values between columns — a
+# teams_observed landing in games_complete reads as valid data. Derive the
+# SELECT list from the dataclass itself, and assert the declared order below
+# so that the equally positional _STORE_QUERY is caught by the same tripwire.
+_LOAD_COLUMNS = tuple(f.name for f in dataclasses.fields(UsageRow))
+_EXPECTED_COLUMNS = (
+    "gsis_id",
+    "season",
+    "week",
+    "team",
+    "position",
+    "snap_share",
+    "target_share",
+    "carry_share",
+    "route_share",
+    "rz_touches",
+    "team_targets",
+    "team_carries",
+    "games_complete",
+    "teams_observed",
+)
+if _LOAD_COLUMNS != _EXPECTED_COLUMNS:
+    raise ImportError(
+        "ffi.usage.UsageRow field order changed to "
+        f"{_LOAD_COLUMNS}; the positional VALUES list in _STORE_QUERY is now "
+        "stale. Update _EXPECTED_COLUMNS and _STORE_QUERY together."
+    )
+_LOAD_QUERY = f"""
+    SELECT {", ".join(_LOAD_COLUMNS)}
     FROM public.usage_weekly
     WHERE season = %s AND week = %s
     ORDER BY gsis_id
@@ -97,15 +131,18 @@ def build_usage_weekly(conn, season: int, week: int) -> UsageFrame:
 
     team_targets: dict[str, int] = {}
     team_carries: dict[str, int] = {}
+    team_players: dict[str, int] = {}
     for _, team, _, targets, carries in stats:
         team_targets[team] = team_targets.get(team, 0) + targets
         team_carries[team] = team_carries.get(team, 0) + carries
+        team_players[team] = team_players.get(team, 0) + 1
     teams_observed = len(team_targets)
 
     incomplete = {
         team
         for team in team_targets
         if team_targets[team] + team_carries[team] < MIN_TEAM_PLAYS
+        and team_players[team] < MIN_TEAM_PLAYERS
     }
     if incomplete:
         log.warning(
@@ -113,23 +150,30 @@ def build_usage_weekly(conn, season: int, week: int) -> UsageFrame:
             season=season,
             week=week,
             teams=sorted(incomplete),
-            floor=MIN_TEAM_PLAYS,
+            plays={t: team_targets[t] + team_carries[t] for t in sorted(incomplete)},
+            players={t: team_players[t] for t in sorted(incomplete)},
+            floor_plays=MIN_TEAM_PLAYS,
+            floor_players=MIN_TEAM_PLAYERS,
             note="share metrics refused (NULL) for these teams — R5 partial publish",
         )
+
+    available = set(_available_metrics())
+    disabled = list(UNAVAILABLE_METRICS)
     if not snaps:
         # Weeks 19+ have no snap feed by construction; inside the regular
-        # season an empty snap map means the feed is behind, and that is
-        # worth a line in the log rather than a silent column of NULLs.
-        log.warning(
-            "usage.no_snap_counts",
-            season=season,
-            week=week,
-            note=(
-                "postseason — snap_counts is REG-only (weeks 1-18)"
-                if week > LAST_SNAP_WEEK
-                else "snap feed missing for a regular-season week — snap_share NULL"
-            ),
+        # season an empty snap map means the feed is behind. Either way the
+        # metric is gone for this week, so it leaves available_metrics — the
+        # frame, not just the log, has to say so, or a snap rule downstream
+        # runs over an all-NULL column and reads the absence as a signal
+        # (R27: degrade by removal, never by silent null-handling).
+        reason = (
+            "postseason — snap_counts is REG-only (weeks 1-18)"
+            if week > LAST_SNAP_WEEK
+            else "snap feed missing for a regular-season week — snap_share NULL"
         )
+        available.discard("snap_share")
+        disabled.append("snap_share")
+        log.warning("usage.no_snap_counts", season=season, week=week, note=reason)
 
     rows = []
     for gsis_id, team, position, targets, carries in stats:
@@ -143,7 +187,11 @@ def build_usage_weekly(conn, season: int, week: int) -> UsageFrame:
                 position=position,
                 # Published as a share by nflverse, not derived from a
                 # denominator this module computes, so the partial-publish
-                # guard does not gate it.
+                # guard does not gate it. `.get(...) is None` rather than
+                # `gsis_id not in snaps`: offense_pct is nullable, so a
+                # present-but-NULL row would reach float(None) and crash the
+                # whole week's build. Reverting to `not in` breaks
+                # test_null_offense_pct_yields_null_snap_share.
                 snap_share=(
                     None if snaps.get(gsis_id) is None else float(snaps[gsis_id])
                 ),
@@ -164,8 +212,8 @@ def build_usage_weekly(conn, season: int, week: int) -> UsageFrame:
         season=season,
         week=week,
         rows=tuple(rows),
-        available_metrics=_available_metrics(),
-        disabled_metrics=UNAVAILABLE_METRICS,
+        available_metrics=frozenset(available),
+        disabled_metrics=tuple(disabled),
         teams_observed=teams_observed,
     )
 
@@ -206,11 +254,19 @@ def load_usage_weekly(conn, season: int, week: int) -> UsageFrame:
             f"load_usage_weekly: public.usage_weekly has no rows for season "
             f"{season} week {week} — run build_usage_weekly + store_usage_weekly"
         )
+    available = set(_available_metrics())
+    disabled = list(UNAVAILABLE_METRICS)
+    if all(r.snap_share is None for r in rows):
+        # The same removal build_usage_weekly makes, restated on the load
+        # path: a stored postseason week is all-NULL snap_share, and a frame
+        # that still advertises snap_share would let a snap rule run over it.
+        available.discard("snap_share")
+        disabled.append("snap_share")
     return UsageFrame(
         season=season,
         week=week,
         rows=rows,
-        available_metrics=_available_metrics(),
-        disabled_metrics=UNAVAILABLE_METRICS,
+        available_metrics=frozenset(available),
+        disabled_metrics=tuple(disabled),
         teams_observed=rows[0].teams_observed,
     )
