@@ -73,6 +73,30 @@ _STAT_COLS = [src for src, _ in COLUMN_MAP if src not in _IDENTITY_SRC] + [
 ]
 
 
+def parse_seasons(spec: str) -> list[int]:
+    """'2025' -> [2025]; '2019-2021' -> [2019, 2020, 2021].
+
+    Shared by scripts/ingest_nflverse.py and scripts/ingest_nflverse_snaps.py
+    so the two feeds can never drift onto different season windows — a
+    silently-narrower snap window than stat window would produce NULL
+    snap_share for real players and read as a role change (R1's bug class).
+    """
+    text = spec.strip()
+    try:
+        if "-" in text:
+            lo_s, hi_s = text.split("-", 1)
+            lo, hi = int(lo_s), int(hi_s)
+        else:
+            lo = hi = int(text)
+    except ValueError:
+        raise ValueError(
+            f"unparseable season spec {spec!r} — expected '2025' or '2019-2025'"
+        ) from None
+    if hi < lo:
+        raise ValueError(f"inverted season range {spec!r} ({lo}-{hi}): high < low")
+    return list(range(lo, hi + 1))
+
+
 class NflversePlayerWeekIngester(BaseIngester):
     source = "nflverse_player_week"
 

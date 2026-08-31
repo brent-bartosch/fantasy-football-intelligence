@@ -6,6 +6,7 @@ from ffi.ingest.nflverse import (
     DERIVED_SUMS,
     NflversePlayerWeekIngester,
     REQUIRED_COLS,
+    parse_seasons,
 )
 
 
@@ -138,3 +139,21 @@ def test_derive_rows_maps_kicking_columns_and_sums_50_plus_treating_nulls_as_zer
     assert row["fg_missed_20_29"] == 1
     assert row["pat_made"] == 3
     assert row["pat_missed"] == 1
+
+
+def test_parse_seasons_single():
+    assert parse_seasons("2025") == [2025]
+
+
+def test_parse_seasons_range():
+    assert parse_seasons("2019-2021") == [2019, 2020, 2021]
+
+
+def test_parse_seasons_rejects_inverted_range():
+    with pytest.raises(ValueError, match="2025-2019"):
+        parse_seasons("2025-2019")
+
+
+def test_parse_seasons_rejects_garbage():
+    with pytest.raises(ValueError, match="unparseable season spec"):
+        parse_seasons("last-year")
