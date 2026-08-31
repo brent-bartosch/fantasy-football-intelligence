@@ -157,3 +157,29 @@ def test_parse_seasons_rejects_inverted_range():
 def test_parse_seasons_rejects_garbage():
     with pytest.raises(ValueError, match="unparseable season spec"):
         parse_seasons("last-year")
+
+
+def test_parse_seasons_rejects_multi_hyphen_garbage():
+    """'2019-2020-2021' must not silently parse as 2019..2020."""
+    with pytest.raises(ValueError, match="unparseable season spec"):
+        parse_seasons("2019-2020-2021")
+
+
+@pytest.mark.parametrize("spec", ["1998", "0", "2101", "20255", "1990-2025"])
+def test_parse_seasons_rejects_implausible_bounds(spec):
+    with pytest.raises(ValueError, match="implausible season"):
+        parse_seasons(spec)
+
+
+def test_parse_seasons_accepts_boundary_values():
+    assert parse_seasons("1999") == [1999]
+    assert parse_seasons("2100") == [2100]
+
+
+@pytest.mark.parametrize("spec", ["last-year", "1998", "2019-2020-2021"])
+def test_parse_seasons_errors_suppress_context(spec):
+    """`from None` — the ValueError the operator sees must be ours, not int()'s."""
+    with pytest.raises(ValueError) as exc:
+        parse_seasons(spec)
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None or exc.value.__suppress_context__

@@ -12,8 +12,16 @@
 # The EXIT trap covers abnormal termination (SIGTERM from launchd, a step
 # that kills the shell); the `briefing_ran` guard keeps the normal path
 # single-render.
+#
+# ADR Domain 5 (exit-nonzero-on-red): "all steps always run" is NOT "all
+# failures are forgiven". `failed` accumulates step rcs so launchd still sees
+# a nonzero exit and surfaces the job as failed; the briefing's own rc takes
+# precedence because a dead dashboard is the more urgent signal.
 set +e
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || {
+  echo "FATAL: cannot cd to repo root from ${BASH_SOURCE[0]}" >&2
+  exit 78
+}
 
 # nflverse has no 2026 data until Week 1 publishes (~2026-09-16) and
 # nflreadpy.get_current_season() does not roll to 2026 until 2026-09-10, so a
@@ -23,6 +31,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # goes RED the moment the loaded season falls behind it.
 FFI_NFLVERSE_SEASONS="${FFI_NFLVERSE_SEASONS:-2025}"
 
+failed=0
 briefing_ran=0
 briefing_rc=1
 run_briefing() {
@@ -37,7 +46,13 @@ trap run_briefing EXIT
 step() {
   echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) :: $*"
   "$@"
-  echo "=== rc=$? :: $*"
+  local rc=$?
+  [ "$rc" -ne 0 ] && failed=1
+  echo "=== rc=$rc :: $*"
+  # Always 0: a nonzero return here under a future `set -e` would abort the
+  # chain, which is the exact bug R23 was about. The failure is recorded in
+  # `failed` and surfaces at exit instead.
+  return 0
 }
 
 step bash scripts/backup_db.sh
@@ -49,4 +64,7 @@ step uv run python scripts/build_valuation.py
 step uv run python scripts/ingest_fp_news.py --daily
 
 run_briefing
-exit "$briefing_rc"
+# Briefing rc wins: if the dashboard itself is broken, that is the failure the
+# operator must see first. Otherwise report whether any upstream step failed.
+[ "$briefing_rc" -ne 0 ] && exit "$briefing_rc"
+exit "$failed"

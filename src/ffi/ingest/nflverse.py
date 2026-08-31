@@ -72,6 +72,11 @@ _STAT_COLS = [src for src, _ in COLUMN_MAP if src not in _IDENTITY_SRC] + [
     c for cols in DERIVED_SUMS.values() for c in cols
 ]
 
+# nflverse play-by-play / player-stats coverage begins in 1999; the upper bound
+# is a sanity ceiling, not a schedule.
+MIN_SEASON = 1999
+MAX_SEASON = 2100
+
 
 def parse_seasons(spec: str) -> list[int]:
     """'2025' -> [2025]; '2019-2021' -> [2019, 2020, 2021].
@@ -94,6 +99,16 @@ def parse_seasons(spec: str) -> list[int]:
         ) from None
     if hi < lo:
         raise ValueError(f"inverted season range {spec!r} ({lo}-{hi}): high < low")
+    # Plausibility bounds. nflverse coverage starts at 1999, and int() happily
+    # accepts "0"/"20255" — a typo'd season would otherwise be handed to
+    # nflreadpy as a real request, or (as a range) expand to thousands of
+    # seasons and hammer the source before failing.
+    for value in (lo, hi):
+        if value < MIN_SEASON or value > MAX_SEASON:
+            raise ValueError(
+                f"implausible season {value} in spec {spec!r} — "
+                f"expected {MIN_SEASON}-{MAX_SEASON}"
+            ) from None
     return list(range(lo, hi + 1))
 
 
