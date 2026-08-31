@@ -11,19 +11,15 @@ is telling you something is wrong.
 The launchd job `com.ffi.morning` runs the full morning pipeline each day at
 07:00 local time:
 
-```
-backup_db.sh
-  && ingest_sleeper.py --season 2026
-  && ingest_fantasypros.py --daily
-  && score_sleeper_projections.py
-  && build_valuation.py
-  && morning_briefing.py
-```
+The chain body is `scripts/morning_chain.sh` (backup → sleeper → nflverse →
+fantasypros → scoring → valuation → fp_news → briefing).
 
-Each step is chained with `&&`, so if any upstream step fails, the briefing
-never runs and the launchd job's own exit code is nonzero — chain failures
-surface loudly instead of the briefing silently reporting on stale/partial
-data.
+Steps are **not** chained with `&&` (R23): each step runs regardless of its
+predecessor and the briefing runs last, under an EXIT trap, so a failing
+ingest can no longer silence the dashboard whose job is to report that
+failure. Step failures still accumulate into the job's exit code; the
+briefing's own exit code wins, because a dead dashboard is the more urgent
+signal.
 
 The chain now starts with `backup_db.sh`, so a fresh `pg_dump` is taken every
 morning before ingest runs — the briefing's 2-day backup-freshness check is
@@ -71,6 +67,27 @@ launchctl bootout gui/$(id -u)/com.ffi.morning
   `logs/launchd-morning.err` (relative to the plist's `WorkingDirectory`,
   the repo root). `logs/` must exist before the first run — launchd does not
   create parent directories for the log paths.
+
+## Reading the health marks
+
+The health header is three-state (`src/ffi/health.py`), driven by the
+per-source contracts in `config/source_clock.yaml` — there is no global
+staleness constant any more:
+
+| Mark | Meaning | Banner? |
+| --- | --- | --- |
+| `[OK]` | within `expected_interval_h + lag_window_h` and status success | no |
+| `[LAG]` | past that but within `deadline_h`, or a `sanity_warned` run — structural lag (e.g. nflverse publishing a day after MNF) | no |
+| `[RED]` | past `deadline_h`, or a non-success run status, or an unregistered source | yes, red-flag exit |
+| `[PENDING]` | an artifact assertion whose renderer has not shipped yet (`active_from` in the future) | no |
+
+Two consequences worth knowing before you debug:
+
+- A source with no entry in `config/source_clock.yaml` renders `[RED]
+  unregistered source` and reds the run. Add the contract; do not special-case
+  the source in the briefing.
+- `[RED] nflverse_snap_counts: table ... does not exist` is expected until the
+  snap-counts feed lands. It is a real red flag, not a bug in the briefing.
 
 ## Reading a red-flag exit
 
