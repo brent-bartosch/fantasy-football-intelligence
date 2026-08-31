@@ -36,8 +36,20 @@ from week 1. That is not a generous ceiling, it is a WRONG one in both
 directions at once: measured live at Task 10 time it turned the oracle
 NEGATIVE in 2024 (-12.5pp) and made 34% of drafts worse than doing nothing,
 which is impossible for a true oracle. Week-accurate, the same policy is
-+30.3pp and never once lowers all-play (0/600 drafts). See
-`tests/test_waiver_ceiling.py::test_an_add_is_not_credited_retroactively`.
++29.07pp (95% CI [+26.28, +31.85], n_cells=1500 = 3 gate seasons x 500 drafts)
+and misses the playoffs in 0 of those 1500 drafts.
+
+NOT a monotonicity proof. The greedy policy takes a week-w lineup gain in
+exchange for a PERMANENT drop, so it is not provably monotone — a drop made for
+week 3 can cost points in week 9. The support for "an oracle never loses ground"
+is empirical only: all-play win pct was lowered in 0 of those same 1500 drafts,
+min per-draft all-play delta +0.0779. Treat a future negative as a bug report
+about the evaluation, not as a violated theorem. Every one of those per-cell
+numbers is re-derivable from `--dump-cells` output, retained at
+`logs/waiver-ceiling-2026-08-31-fixed-n500-cells.json` (tracked; `logs/` is
+otherwise gitignored). See
+`tests/test_waiver_ceiling.py::test_an_add_is_not_credited_retroactively` and
+`::test_run_season_scores_our_team_week_accurately`.
 """
 import argparse
 import json
@@ -252,6 +264,46 @@ def run_season(conn, priors, season: int, n_drafts: int) -> list:
     return cells
 
 
+def summarize(cells: list) -> dict:
+    """Playoff-probability delta and its McNemar CI over ANY subset of cells.
+
+    Shared by the headline and by the per-season breakdown so the two can never
+    be computed by different rules. Playoff probability saturates at 1.0 for the
+    oracle, so `mean_base_pct`/`mean_foresight_pct` (all-play win pct, which does
+    not saturate) are reported alongside as the readable-signal view.
+    """
+    n = len(cells)
+    if not n:
+        raise ValueError("summarize() got zero cells — nothing was simulated.")
+    base_p = sum(c["base_playoff"] for c in cells) / n
+    fs_p = sum(c["foresight_playoff"] for c in cells) / n
+    delta_pp = 100 * (fs_p - base_p)
+    # McNemar: only discordant pairs carry information about a paired
+    # difference of proportions.
+    b = sum(1 for c in cells if c["foresight_playoff"] and not c["base_playoff"])
+    c_ = sum(1 for c in cells if c["base_playoff"] and not c["foresight_playoff"])
+    se_pp = 100 * ((b + c_) ** 0.5) / n
+    return {
+        "n_cells": n,
+        "mean_adds": round(statistics.mean(c["adds"] for c in cells), 2),
+        "baseline_playoff_prob": round(base_p, 4),
+        "foresight_playoff_prob": round(fs_p, 4),
+        "delta_pp": round(delta_pp, 2),
+        "se_pp": round(se_pp, 2),
+        "ci95_pp": [round(delta_pp - 2 * se_pp, 2), round(delta_pp + 2 * se_pp, 2)],
+        "mean_base_pct": round(statistics.mean(c["base_pct"] for c in cells), 4),
+        "mean_foresight_pct": round(
+            statistics.mean(c["foresight_pct"] for c in cells), 4
+        ),
+        "min_allplay_delta": round(
+            min(c["foresight_pct"] - c["base_pct"] for c in cells), 4
+        ),
+        "n_allplay_lowered": sum(
+            1 for c in cells if c["foresight_pct"] < c["base_pct"]
+        ),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -260,6 +312,13 @@ def main() -> int:
         help="comma-separated; pools must exist in sim.backtest_pool",
     )
     parser.add_argument("--n-drafts", type=int, default=40)
+    parser.add_argument(
+        "--dump-cells",
+        metavar="PATH",
+        help="write every per-cell dict to PATH as JSON. Without this the run "
+        "leaves only aggregates, and a per-season or per-draft claim about a "
+        "past run cannot be re-derived from the retained artifact.",
+    )
     args = parser.parse_args()
 
     conn = connect()
@@ -268,36 +327,42 @@ def main() -> int:
     for season in [int(s) for s in args.seasons.split(",")]:
         cells += run_season(conn, priors, season, args.n_drafts)
 
-    n = len(cells)
-    base_p = sum(c["base_playoff"] for c in cells) / n
-    fs_p = sum(c["foresight_playoff"] for c in cells) / n
-    delta_pp = 100 * (fs_p - base_p)
-    # McNemar: only discordant pairs carry information about a paired
-    # difference of proportions.
-    b = sum(1 for c in cells if c["foresight_playoff"] and not c["base_playoff"])
-    c_ = sum(1 for c in cells if c["base_playoff"] and not c["foresight_playoff"])
-    se_pp = 100 * ((b + c_) ** 0.5) / n if n else 0.0
-
-    summary = {
-        "n_cells": n,
-        "seasons": sorted({c["season"] for c in cells}),
-        "n_drafts_per_season": args.n_drafts,
-        "mean_adds": statistics.mean(c["adds"] for c in cells),
-        "baseline_playoff_prob": round(base_p, 4),
-        "foresight_playoff_prob": round(fs_p, 4),
-        "delta_pp": round(delta_pp, 2),
-        "se_pp": round(se_pp, 2),
-        "ci95_pp": [round(delta_pp - 2 * se_pp, 2), round(delta_pp + 2 * se_pp, 2)],
-        "cut_threshold_pp": CUT_THRESHOLD_PP,
-        "decision": (
-            "BUILD Plans 3-4" if delta_pp >= CUT_THRESHOLD_PP else "CUT Plans 3-4"
-        ),
+    seasons = sorted({c["season"] for c in cells})
+    summary = summarize(cells)
+    summary["seasons"] = seasons
+    summary["n_drafts_per_season"] = args.n_drafts
+    summary["cut_threshold_pp"] = CUT_THRESHOLD_PP
+    summary["decision"] = (
+        "BUILD Plans 3-4"
+        if summary["delta_pp"] >= CUT_THRESHOLD_PP
+        else "CUT Plans 3-4"
+    )
+    summary["per_season"] = {
+        str(s): summarize([c for c in cells if c["season"] == s]) for s in seasons
     }
     print(json.dumps(summary, indent=2))
+
+    print("\nPER SEASON (all-play does not saturate; playoff prob does):")
+    for s in seasons:
+        ps = summary["per_season"][str(s)]
+        print(
+            f"  {s}  n={ps['n_cells']:<5} playoff {ps['baseline_playoff_prob']:.3f} -> "
+            f"{ps['foresight_playoff_prob']:.3f} ({ps['delta_pp']:+.2f}pp)   "
+            f"all-play {ps['mean_base_pct']:.4f} -> {ps['mean_foresight_pct']:.4f}   "
+            f"min all-play delta {ps['min_allplay_delta']:+.4f}   "
+            f"lowered {ps['n_allplay_lowered']}/{ps['n_cells']}"
+        )
+
+    if args.dump_cells:
+        with open(args.dump_cells, "w") as fh:
+            json.dump({"summary": summary, "cells": cells}, fh, indent=2)
+        print(f"\nwrote {len(cells)} cells -> {args.dump_cells}")
+
     print(
-        f"\nCEILING: perfect-foresight waivers are worth {delta_pp:+.2f}pp of playoff "
-        f"probability (95% CI {summary['ci95_pp'][0]:+.2f} to {summary['ci95_pp'][1]:+.2f}, "
-        f"n={n}). Threshold {CUT_THRESHOLD_PP}pp -> {summary['decision']}."
+        f"\nCEILING: perfect-foresight waivers are worth {summary['delta_pp']:+.2f}pp of "
+        f"playoff probability (95% CI {summary['ci95_pp'][0]:+.2f} to "
+        f"{summary['ci95_pp'][1]:+.2f}, n={summary['n_cells']}). "
+        f"Threshold {CUT_THRESHOLD_PP}pp -> {summary['decision']}."
     )
     return 0
 

@@ -54,7 +54,11 @@ Thumbs.db
 
 # Logs
 *.log
-logs/
+logs/*
+# ...but the P4 ceiling per-cell dumps are EVIDENCE, not logs. Task 10's review
+# could not re-derive the per-season numbers because every artifact behind them
+# was gitignored. `--dump-cells` output is small (~70K/300 cells) and tracked.
+!logs/waiver-ceiling-*-cells.json
 
 # Data files
 data/*.csv

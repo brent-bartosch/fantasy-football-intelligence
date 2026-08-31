@@ -1,5 +1,6 @@
 import pytest
 
+from ffi.sim.draft import DraftResult
 from ffi.sim.pool import PoolPlayer
 from ffi.sim.season import evaluate_league
 
@@ -51,6 +52,19 @@ def test_lineup_total_matches_the_library_evaluator():
 
 
 def test_perfect_foresight_never_lowers_the_roster():
+    """ROSTER property, NOT an evaluation pattern. Summing `lineup_total` over
+    the FINAL roster for all 14 weeks — as this test does — is exactly the
+    retroactive-credit trap that `test_an_add_is_not_credited_retroactively`
+    forbids for scoring a season. It is legitimate here only because the claim
+    being made is about the roster ("the swaps left us with better players"),
+    not about what we scored in any particular week. Do not copy this pattern
+    into anything week-indexed.
+
+    Note this is also not a monotonicity proof: the greedy takes a week-w gain
+    for a permanent drop, so a season-sum decrease is possible in principle. It
+    cannot happen on THIS fixture (the free agents dominate every roster player
+    in every week), and empirically never happened in 900 measured drafts.
+    """
     roster = _full_roster("A", 5.0)
     fa = [_p("FA-RB", "RB", 99.0), _p("FA-WR", "WR", 98.0)]
     lookup = _lookup({1: roster + fa})
@@ -127,12 +141,58 @@ def test_an_add_is_not_credited_retroactively():
             roster, w, lookup
         ), f"retroactive scoring corrupts week {w}"
 
-    # Season-level: against an identical twin, the oracle wins exactly the one
-    # week it acted in — not all 14.
-    rosters = {1: roster, 2: _full_roster("B", 5.0)}
+    # Season-level. The opponent is deliberately placed BETWEEN the two totals
+    # so the two evaluations of the same policy result cannot agree:
+    #   our real weeks 1-13 total  = 110.0   (the drafted roster, untouched)
+    #   our final-roster total     = 103.0   (the week-14 drop erased from them)
+    #   opponent B (base 4.9)      = 108.9   -> strictly between the two
+    # so week-accurate scoring wins all 14 weeks (13 on merit + the spike week)
+    # while retroactive scoring LOSES weeks 1-13 and wins only week 14.
+    # An identical twin at 5.0 would tie weeks 1-13 under both evaluations and
+    # report 1/14 either way — a test that cannot see the bug it is named for.
+    rosters = {1: held[wct.REG_WEEKS], 2: _full_roster("B", 4.9)}
     lookup.update(_lookup({2: rosters[2]}))
+
     weekly = wct.all_play_pct(rosters, lookup, weekly_rosters={1: held})
-    assert weekly[1] == pytest.approx(1 / 14)
+    assert weekly[1] == pytest.approx(1.0), "week-accurate: we win all 14 weeks"
+
+    # The buggy path, spelled out: score the FINAL roster every week (which is
+    # what `rosters` alone holds). 1/14 — and that 13-week gap is the entire
+    # difference between the +29.07pp ceiling and the negative-oracle nonsense.
+    retroactive = wct.all_play_pct(rosters, lookup)
+    assert retroactive[1] == pytest.approx(1 / 14)
+
+
+def test_run_season_scores_our_team_week_accurately(monkeypatch):
+    """Binds the ONLY caller of the weekly path. Every other test here pins
+    `perfect_foresight_weekly` and `all_play_pct` in isolation, so `run_season`
+    could revert to `perfect_foresight_roster` + plain `all_play_pct` — the exact
+    original bug — with the whole file still green. Same week-14-spike fixture,
+    driven through `run_season` with the DB and the draft stubbed out."""
+    ours = _full_roster("A", 5.0)
+    theirs = _full_roster("B", 4.9)
+    late = _p("FA-LATE", "RB", 0.0)
+    lookup = _lookup({1: ours, 2: theirs})
+    for w in range(1, 15):
+        lookup[("FA-LATE", w)] = 0.0
+    lookup[("FA-LATE", 14)] = 500.0
+    # The opponent spikes in week 14 too, so DOING NOTHING loses that week. That
+    # separates all three candidate evaluations: do-nothing 13/14, week-accurate
+    # 14/14, retroactive 1/14. Without it, do-nothing and week-accurate tie.
+    lookup[("B-QB0", 14)] = 200.0
+
+    result = DraftResult(rosters={1: ours, 2: theirs}, our_position=1)
+    monkeypatch.setattr(wct, "load_backtest_pool", lambda *a: ours + theirs + [late])
+    monkeypatch.setattr(wct, "load_points_lookup", lambda *a: lookup)
+    monkeypatch.setattr(wct, "make_strategy_fn", lambda *a: None)
+    monkeypatch.setattr(wct, "cell_base_seed", lambda *a: 7)
+    monkeypatch.setattr(wct, "run_draft", lambda *a, **k: result)
+
+    (cell,) = wct.run_season(conn=None, priors=None, season=2025, n_drafts=1)
+    assert cell["adds"] == 1, "only the week-14 spike is worth a swap"
+    assert cell["base_pct"] == pytest.approx(13 / 14), "do-nothing loses week 14"
+    assert cell["foresight_pct"] == pytest.approx(1.0), "week-accurate: 14/14"
+    assert cell["foresight_pct"] != pytest.approx(1 / 14), "retroactive value"
 
 
 def test_no_free_agents_means_no_adds():

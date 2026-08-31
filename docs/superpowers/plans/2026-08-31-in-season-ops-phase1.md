@@ -5019,8 +5019,8 @@ Fill these in as the plan executes. They are the plan's output, not decoration �
 | snap-counts backfill coverage | Task 7 Step 8 | _(rows and mean offense_pct per season)_ |
 | usage_weekly smoke: teams_observed / incomplete rows | Task 8 Step 9 | _(should be 32 / 0 for 2025 wk3)_ |
 | Trend-engine flag count, 2025 wk6 | Task 9 Step 7 | _(count + rule_id histogram — the R10 baseline Plan 2's precision gate must beat)_ |
-| **P4 ceiling `delta_pp`** | Task 10 Step 8 | _(delta_pp, ci95_pp, n_cells)_ |
-| **P4 decision** | Task 10 Step 8 | _(BUILD Plans 3-4 if ≥8pp, else CUT Plans 3-4 — Plan 2 ships either way)_ |
+| **P4 ceiling `delta_pp`** | Task 10 Step 8 | **+29.07pp**, 95% CI **[+26.28, +31.85]**, `n_cells` = **1500** (3 gate seasons × 500 drafts). Reproduce: `uv run python scripts/waiver_ceiling_test.py --n-drafts 500`. |
+| **P4 decision** | Task 10 Step 8 | **BUILD Plans 3-4** — the 8.0pp cut threshold is cleared 3.6×, and the whole 95% CI sits above it. **Caveat:** this is an ORACLE bound (perfect knowledge of every player's exact weekly score), not the share a realistic advisor recovers; P4 says the headroom is not small, it does not say Plans 3-4 capture it. Playoff probability also saturates (foresight = 1.000 in 1500/1500), so the all-play view (0.5788 → 0.9622) is the non-degenerate signal. Per-cell evidence: `logs/waiver-ceiling-2026-08-31-fixed-n500-cells.json` (tracked). |
 | `pmset` confirmed | Task 11 Step 1 | _(output of `pmset -g sched`)_ |
 | `FFI_BACKUP_REMOTE` destination | Task 11 Step 10 | _(USER INPUT REQUIRED — the operator's chosen offsite target, or "still unset")_ |
 | Final guard + test counts | Task 12 Step 4 | _(file count, test count)_ |
