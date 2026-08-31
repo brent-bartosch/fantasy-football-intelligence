@@ -11,7 +11,9 @@ from ffi.ingest.sleeper_trending import SleeperTrendingIngester
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--lookback-hours", type=int, default=24)
-parser.add_argument("--limit", type=int, default=200)
+# 100 is the server's hard cap per direction (probed 2026-08-31: limit=200 and
+# limit=500 both return 100), so asking for more only misleads the reader.
+parser.add_argument("--limit", type=int, default=100)
 parser.add_argument(
     "--inspect",
     action="store_true",

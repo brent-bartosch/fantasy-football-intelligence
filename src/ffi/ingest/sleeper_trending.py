@@ -8,6 +8,7 @@ Normalization into `public.market_trends` happens later, from these rows.
 """
 import datetime
 import json
+import time
 from zoneinfo import ZoneInfo
 
 import requests
@@ -18,33 +19,78 @@ from ffi.ingest.base import BaseIngester, IngestError
 log = structlog.get_logger()
 
 BASE_URL = "https://api.sleeper.app/v1/players/nfl/trending"
-TRA_TYPES = ("add", "drop")
+TREND_TYPES = ("add", "drop")
 LEAGUE_TZ = ZoneInfo("America/Los_Angeles")
 
-# The live endpoint returns `limit` rows when healthy. A payload this thin is
-# either an outage or a semantic change; either way it must not be archived
-# as if it were a normal day.
+# The server clamps trending to 100 rows per direction no matter what `limit`
+# asks for — probed 2026-08-31, limit=200 and limit=500 both returned exactly
+# 100. So a healthy day is 100 rows, not `limit`, and the floor below is 50%
+# of a healthy day. Thinner than half a full list is an outage or a semantic
+# change, and must not be archived as if it were a normal day.
+SERVER_ROW_CAP = 100
 MIN_ROWS_PER_DIRECTION = 50
+
+# One missed day is unrecoverable (R8), so a transient network blip or a
+# Sleeper 5xx gets a bounded second and third try before the job fails.
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = (2, 4)  # slept after attempt 1 and attempt 2
 
 
 class SleeperTrendingIngester(BaseIngester):
     source = "sleeper_trending"
 
-    def __init__(self, lookback_hours: int = 24, limit: int = 200):
+    def __init__(self, lookback_hours: int = 24, limit: int = SERVER_ROW_CAP):
         self.lookback_hours = lookback_hours
         self.limit = limit
 
+    def _fetch_direction(self, trend_type: str) -> list:
+        """GET one direction, retrying transport errors and 5xx only.
+
+        A 4xx is deterministic — a bad request, a moved route, a rate-limit
+        policy — so retrying it just burns the window; it fails immediately.
+        Exhausting the attempts raises IngestError naming the direction and
+        the last error. Nothing here is swallowed.
+        """
+        last_error = None
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            try:
+                resp = requests.get(
+                    f"{BASE_URL}/{trend_type}",
+                    params={"lookback_hours": self.lookback_hours, "limit": self.limit},
+                    timeout=30,
+                )
+            except requests.RequestException as exc:
+                last_error = exc
+            else:
+                if 400 <= resp.status_code < 500:
+                    raise IngestError(
+                        f"sleeper_trending: '{trend_type}' returned HTTP "
+                        f"{resp.status_code} — client error, not retried: "
+                        f"{resp.text[:200]}"
+                    )
+                if resp.status_code >= 500:
+                    last_error = requests.HTTPError(
+                        f"HTTP {resp.status_code}", response=resp
+                    )
+                else:
+                    return resp.json()
+            if attempt < RETRY_ATTEMPTS:
+                delay = RETRY_BACKOFF_SECONDS[attempt - 1]
+                log.warning(
+                    "sleeper_trending.retry",
+                    trend_type=trend_type,
+                    attempt=attempt,
+                    sleep_s=delay,
+                    error=str(last_error),
+                )
+                time.sleep(delay)
+        raise IngestError(
+            f"sleeper_trending: '{trend_type}' failed after {RETRY_ATTEMPTS} "
+            f"attempts — last error {type(last_error).__name__}: {last_error}"
+        ) from last_error
+
     def fetch(self) -> dict:
-        out = {}
-        for trend_type in TRA_TYPES:
-            resp = requests.get(
-                f"{BASE_URL}/{trend_type}",
-                params={"lookback_hours": self.lookback_hours, "limit": self.limit},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            out[trend_type] = resp.json()
-        return out
+        return {t: self._fetch_direction(t) for t in TREND_TYPES}
 
     def validate(self, payload) -> int:
         if not isinstance(payload, dict):
@@ -53,7 +99,7 @@ class SleeperTrendingIngester(BaseIngester):
                 f"{type(payload).__name__}: {str(payload)[:200]}"
             )
         total = 0
-        for trend_type in TRA_TYPES:
+        for trend_type in TREND_TYPES:
             if trend_type not in payload:
                 raise IngestError(
                     f"sleeper_trending: payload missing '{trend_type}' — "
@@ -88,7 +134,7 @@ class SleeperTrendingIngester(BaseIngester):
             datetime.datetime.now(datetime.timezone.utc).astimezone(LEAGUE_TZ).date()
         )
         with conn.cursor() as cur:
-            for trend_type in TRA_TYPES:
+            for trend_type in TREND_TYPES:
                 cur.execute(
                     "INSERT INTO raw.sleeper_trending "
                     "(run_id, archive_date, trend_type, lookback_hours, payload) "

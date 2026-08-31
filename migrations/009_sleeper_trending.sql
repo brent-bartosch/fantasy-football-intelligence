@@ -10,6 +10,12 @@
 -- day's snapshot would destroy the very thing this table exists to
 -- preserve. Continuity is measured with COUNT(DISTINCT archive_date)
 -- (scripts/morning_briefing.py), which is insensitive to duplicates.
+--
+-- The corollary for readers: a point read of "the" snapshot for a day must
+-- disambiguate a doubled day by taking MAX(snapshot_id) per
+-- (archive_date, trend_type) — the highest id is the last successful write
+-- for that day, and it wins. Reading without that aggregation can silently
+-- return the partial snapshot a retry superseded.
 CREATE TABLE IF NOT EXISTS raw.sleeper_trending (
     snapshot_id    bigserial PRIMARY KEY,
     run_id         integer REFERENCES raw.ingest_runs(run_id),
