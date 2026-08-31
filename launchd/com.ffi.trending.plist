@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.ffi.trending</string>
+  <key>WorkingDirectory</key><string>/Users/brentbartosch/Development/fantasy_football</string>
+  <!-- Deliberately its OWN job, not a step in com.ffi.morning: the trending
+       archive is the only feed whose missed day is unrecoverable (R8), so it
+       must not share a failure domain with the morning chain. It runs at
+       06:30, half an hour ahead of com.ffi.morning (07:00), so the day's row
+       exists before the briefing's archive-continuity check reads it. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string><string>-lc</string>
+    <string>uv run python scripts/ingest_sleeper_trending.py</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>30</integer></dict>
+  <key>StandardOutPath</key><string>logs/launchd-trending.log</string>
+  <key>StandardErrorPath</key><string>logs/launchd-trending.err</string>
+</dict></plist>

@@ -76,7 +76,7 @@ for `scripts/check_file_size.sh` — keep the third column purely numeric.
 | `scripts/probe_yahoo_access.py` | Daily authenticated Yahoo probe → `raw.ingest_runs` under source `yahoo_probe`; no retry on 403; Sept 10 decision date | 100 |
 | `scripts/run_claims_brief.py` | launchd entry point for `com.ffi.claims` (Monday evening) | 150 |
 | `scripts/run_trends_report.py` | launchd entry point for `com.ffi.trends` (data-readiness trigger + hard fallback fire time) | 150 |
-| `scripts/archive_sleeper_trending.py` | P2: daily `raw.sleeper_trending` archive (started before anything else) | 100 |
+| `scripts/ingest_sleeper_trending.py` | P2: daily `raw.sleeper_trending` archive (started before anything else). Renamed from `archive_sleeper_trending.py` during writing-plans to match the repo's `scripts/ingest_*.py` convention | 100 |
 
 ### 1c. Data contracts (config and artifacts — not code, no line budget)
 
@@ -137,7 +137,7 @@ topological sort (order below is a valid topological order; every edge points st
 - `scripts/run_claims_brief.py`, `scripts/run_trends_report.py` → `reports/` and anything below it
 - `scripts/notify.py` → `db`, `health` (and nothing else internal — it must stay importable from any job)
 - `scripts/probe_yahoo_access.py` → `yahoo_client`, `db`
-- `scripts/archive_sleeper_trending.py` → `ingest/`, `db`
+- `scripts/ingest_sleeper_trending.py` → `ingest/`, `db`
 - other `scripts/*` → any `src/ffi` module
 
 **Topological order (acyclic proof — 20 nodes, 80 directed edges, verified by topological sort):**
