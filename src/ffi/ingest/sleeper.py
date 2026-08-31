@@ -1,10 +1,13 @@
 import datetime
 import json
+from zoneinfo import ZoneInfo
 
 import requests
 import structlog
 
 from ffi.ingest.base import Baseline, BaseIngester, IngestError, baseline_label
+
+LEAGUE_TZ = ZoneInfo("America/Los_Angeles")
 from ffi.ingest.gates import (
     check_fieldset,
     check_nonzero_coverage,
@@ -260,7 +263,11 @@ class SleeperProjectionsIngester(BaseIngester):
         # when stale) — with success-preferring selection the comparison is no
         # longer necessarily against yesterday, so "drift vs prior snapshot"
         # on its own would be unactionable.
-        feed = baseline_label(self.source, baseline, datetime.date.today())
+        feed = baseline_label(
+            self.source,
+            baseline,
+            datetime.datetime.now(datetime.timezone.utc).astimezone(LEAGUE_TZ).date(),
+        )
         # Union of stats keys across every record, not record[0]'s: the
         # adp_2qb disappearance is precisely a key that goes missing from part
         # of the payload, and Sleeper's records are ragged (deep-bench entries

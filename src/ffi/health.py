@@ -128,7 +128,7 @@ def state(
     file-derived sources like `backup`.
     """
     contract = (clock or load_clock()).contract(source)
-    if age_h is None or age_h < 0:
+    if age_h is None or not (age_h >= 0):  # NaN-safe: NaN fails >= 0
         raise ValueError(
             f"{source}: age_h must be a non-negative number, got {age_h!r}"
         )

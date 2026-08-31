@@ -243,7 +243,7 @@ exist are provisional in *name and shape only* — the semantics are fixed by th
 | Fail-closed rendering | `render_or_refuse(inputs: Mapping[str, SourceState], render: Callable[[], str]) -> str` — emits `NO SIGNAL — <source> <state> since <ts>` instead of computing on a BROKEN input | `src/ffi/health.py` |
 | Module enable flags | `enabled(module: str) -> bool`, `disabled_since(module: str) -> date \| None` | `src/ffi/flags.py` |
 | Job serialization | `acquire_or_wait(conn, name: str, wait_s: float = 900, poll_s: float = 5) -> None`, `advisory_lock(conn, name, ...)` (contextmanager), `release(conn, name)`; raises `JobLockTimeout` | `src/ffi/joblock.py` |
-| Ingest sanity gate | `check(feed: str, snapshot, prior) -> GateResult`; failure raises `GateFailure` and the run is recorded `status='sanity_failed'` | `src/ffi/ingest/gates.py` |
+| Ingest sanity gate | `check_fieldset(prev, curr, *, feed)` / `check_rank_correlation(prev, curr, *, feed, min_rho=0.85)` / `check_nonzero_coverage(rows, *, feed, min_players)`; failure raises `SanityGateError` and the run is recorded `status='sanity_failed'` (fail mode) or `'sanity_warned'` (warn mode) | `src/ffi/ingest/gates.py` |
 | League clock | `deadline(event: str, week: int) -> datetime` (tz-aware), `window(event, week) -> tuple[datetime, datetime]`, `fallback_fire_time(job, week) -> datetime` | `src/ffi/league_state/clock.py` |
 | League state read/write | `load_transactions(week) -> list[Transaction]`, `load_rosters(as_of) -> list[RosterRow]`, `record(rows, source, ts_precision) -> None` | `src/ffi/league_state/adapter.py` |
 | Capture ingestion | `parse_capture(path) -> list[Transaction]` — the only screenshot/text parser | `src/ffi/league_state/manual.py` |
