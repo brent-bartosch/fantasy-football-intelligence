@@ -6,11 +6,33 @@ silently become a number in a deadline computation. R4/R16 are the concrete
 cases — a `waiver_processing_hour` guessed from the settings page would
 produce a confidently-wrong claim deadline every week of the season.
 
-Detection is a string-literal scan, not an import graph: the YAML is read
-through dict lookups (`clock["waiver_processing_hour"]`,
-`clock.get("clear_award_mechanism")`), so the field name appears verbatim at
-every real call site. False positives are acceptable and are the safe
-direction; a false negative is the failure this script exists to prevent.
+Detection is a textual scan of `src/` and `scripts/`, not an import graph. For
+each unsafe field name, three shapes are matched:
+
+  1. `['"]field['"]`   — dict access: `clock["waiver_processing_hour"]`,
+                          `clock.get("clear_award_mechanism")`, and any other
+                          quoted mention (including in a list of key names).
+  2. `.field\\b`        — attribute access: `clock.waiver_processing_hour`,
+                          i.e. the field arriving via a dataclass/SimpleNamespace.
+  3. `\\bfield\\s*[:=]`  — bare-identifier binding or comparison: `trade_deadline =`,
+                          `trade_deadline:` (kwarg, annotation, YAML-ish literal),
+                          `trade_deadline ==`.
+
+What is NOT caught, and cannot be by a textual scan:
+
+  * Generic iteration that never names the field —
+    `for k, v in doc.items(): setattr(cfg, k, v)` or `Clock(**doc)`. A consumer
+    written that way is a false negative. The mitigation is social, not
+    mechanical: `config/league_clock.yaml` documents the marker conventions,
+    and `src/ffi/league_state/clock.py` is the only sanctioned reader.
+  * Dynamically built keys — `clock[f"waiver_{part}"]`.
+  * Consumers outside `src/` and `scripts/` (tests are intentionally exempt;
+    they must be able to name unsafe fields to assert on them).
+
+False positives are acceptable and are the safe direction — shape 3 in
+particular will flag any unrelated local named `trade_deadline`. Fix a
+collision by renaming the colliding symbol, not by weakening the pattern; a
+false negative is the failure this script exists to prevent.
 
 Exit 0 = safe. Exit 1 = an unsafe field is consumed (with file:line).
 """
@@ -40,16 +62,37 @@ def load_doc(path: pathlib.Path) -> dict:
 
 def unsafe_fields(doc: dict) -> list[str]:
     """Field names that must not be consumed yet: value == 'UNSET', or a
-    sibling `<field>_verified` that is false."""
+    sibling `<field>_verified` that is false.
+
+    A `<field>_verified` marker whose base field is absent is a config typo
+    that would silently disable the gate for the field the author meant to
+    protect, so it raises rather than being skipped (fail-loud)."""
     unsafe = {
         k for k, val in doc.items() if isinstance(val, str) and val.strip() == UNSET
     }
     for key, val in doc.items():
-        if key.endswith(VERIFIED_SUFFIX) and val is False:
-            base = key[: -len(VERIFIED_SUFFIX)]
-            if base in doc:
-                unsafe.add(base)
+        if not key.endswith(VERIFIED_SUFFIX):
+            continue
+        base = key[: -len(VERIFIED_SUFFIX)]
+        if base not in doc:
+            raise ValueError(
+                f"orphan verification marker {key!r}: no base field {base!r} in "
+                f"the document. Rename the marker or add the field — a marker "
+                f"that guards nothing silently disables the gate."
+            )
+        if val is False:
+            unsafe.add(base)
     return sorted(unsafe)
+
+
+def _consumption_pattern(fields: list[str]) -> re.Pattern:
+    """One alternation with a named group per field, so a match knows which
+    field it found. See the module docstring for the three shapes."""
+    alts = []
+    for i, field in enumerate(fields):
+        f = re.escape(field)
+        alts.append(rf"(?P<f{i}>['\"]{f}['\"]|\.{f}\b|\b{f}\s*[:=])")
+    return re.compile("|".join(alts))
 
 
 def find_consumers(
@@ -57,8 +100,9 @@ def find_consumers(
 ) -> list[tuple[str, str, int]]:
     if not fields:
         return []
-    pattern = re.compile("|".join(rf"['\"]{re.escape(f)}['\"]" for f in fields))
+    pattern = _consumption_pattern(fields)
     hits: list[tuple[str, str, int]] = []
+    seen: set[tuple[str, str, int]] = set()
     for root in roots:
         if not root.exists():
             continue
@@ -66,23 +110,32 @@ def find_consumers(
             if SKIP_PARTS & set(path.parts) or path.name == SELF:
                 continue
             for lineno, line in enumerate(path.read_text().splitlines(), start=1):
-                match = pattern.search(line)
-                if match:
-                    hits.append((match.group(0).strip("'\""), str(path), lineno))
+                # finditer, not search: one line may consume two fields.
+                for match in pattern.finditer(line):
+                    field = fields[int(match.lastgroup[1:])]
+                    hit = (field, str(path), lineno)
+                    if hit not in seen:
+                        seen.add(hit)
+                        hits.append(hit)
     return hits
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    config: pathlib.Path = CONFIG,
+    roots: list[pathlib.Path] | None = None,
+) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
-    doc = load_doc(CONFIG)
+    roots = SCAN_ROOTS if roots is None else roots
+    doc = load_doc(config)
     if "as_of" not in doc:
-        print(f"FAIL: {CONFIG} has no as_of stamp.")
+        print(f"FAIL: {config} has no as_of stamp.")
         return 1
     fields = unsafe_fields(doc)
-    hits = find_consumers(fields, SCAN_ROOTS)
+    hits = find_consumers(fields, roots)
     if hits:
         print(f"FAIL: {len(hits)} consumer(s) of UNSET/UNVERIFIED league-clock fields:")
         for field, path, lineno in hits:
@@ -92,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if not args.quiet:
         print(
-            f"OK: {CONFIG} as_of {doc['as_of']}; {len(fields)} field(s) still "
+            f"OK: {config} as_of {doc['as_of']}; {len(fields)} field(s) still "
             f"UNSET/UNVERIFIED and none is consumed: {', '.join(fields) or '(none)'}"
         )
     return 0
