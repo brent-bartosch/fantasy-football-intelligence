@@ -58,6 +58,10 @@ step() {
 step bash scripts/backup_db.sh
 step uv run python scripts/ingest_sleeper.py --season 2026
 step uv run python scripts/ingest_nflverse.py --seasons "$FFI_NFLVERSE_SEASONS"
+# Same season window, deliberately: a snap window narrower than the stat window
+# yields NULL snap_share for real players, which reads downstream as a role
+# change rather than as missing data (R1's bug class).
+step uv run python scripts/ingest_nflverse_snaps.py --seasons "$FFI_NFLVERSE_SEASONS"
 step uv run python scripts/ingest_fantasypros.py --daily
 step uv run python scripts/score_sleeper_projections.py
 step uv run python scripts/build_valuation.py
