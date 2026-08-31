@@ -63,7 +63,7 @@ def test_perfect_foresight_never_lowers_the_roster():
     Note this is also not a monotonicity proof: the greedy takes a week-w gain
     for a permanent drop, so a season-sum decrease is possible in principle. It
     cannot happen on THIS fixture (the free agents dominate every roster player
-    in every week), and empirically never happened in 900 measured drafts.
+    in every week), and empirically never happened in 1500 measured drafts (committed cells artifact).
     """
     roster = _full_roster("A", 5.0)
     fa = [_p("FA-RB", "RB", 99.0), _p("FA-WR", "WR", 98.0)]
@@ -192,7 +192,7 @@ def test_run_season_scores_our_team_week_accurately(monkeypatch):
     assert cell["adds"] == 1, "only the week-14 spike is worth a swap"
     assert cell["base_pct"] == pytest.approx(13 / 14), "do-nothing loses week 14"
     assert cell["foresight_pct"] == pytest.approx(1.0), "week-accurate: 14/14"
-    assert cell["foresight_pct"] != pytest.approx(1 / 14), "retroactive value"
+    # (== 1.0 above already excludes the retroactive value of 1/14)
 
 
 def test_no_free_agents_means_no_adds():
