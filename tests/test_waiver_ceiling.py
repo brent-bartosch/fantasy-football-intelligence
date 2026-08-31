@@ -95,6 +95,46 @@ def test_a_position_is_never_dropped_below_its_starter_requirement():
         assert counts.get(pos, 0) >= need, f"{pos} dropped below {need}"
 
 
+def test_an_add_is_not_credited_retroactively():
+    """The trap that made the first run report a NEGATIVE oracle in 2024: score
+    the FINAL end-of-season roster over all 14 weeks and a week-14 pickup gets
+    credited for weeks 1-13 while the player he replaced is erased from weeks
+    he actually played. Our team must be scored each week with the roster we
+    actually held that week."""
+    roster = _full_roster("A", 5.0)
+    late = _p("FA-LATE", "RB", 0.0)
+    lookup = _lookup({1: roster})
+    for w in range(1, 15):
+        lookup[("FA-LATE", w)] = 0.0
+    lookup[("FA-LATE", 14)] = 500.0  # one enormous week, and only that week
+
+    held, adds = wct.perfect_foresight_weekly(roster, [late], lookup)
+    assert adds == 1, "the week-14 spike is the only swap worth making"
+    assert late not in held[1], "credited before he was ever added"
+    assert late in held[14]
+    # Week 1 must be indistinguishable from having done nothing.
+    assert wct.lineup_total(held[1], 1, lookup) == pytest.approx(
+        wct.lineup_total(roster, 1, lookup)
+    )
+    # Every pre-add week must be identical to doing nothing, and scoring the
+    # FINAL roster in those weeks must be provably wrong (it is missing the
+    # player who was dropped in week 14 but actually played weeks 1-13).
+    for w in range(1, 14):
+        assert wct.lineup_total(held[w], w, lookup) == pytest.approx(
+            wct.lineup_total(roster, w, lookup)
+        )
+        assert wct.lineup_total(held[14], w, lookup) < wct.lineup_total(
+            roster, w, lookup
+        ), f"retroactive scoring corrupts week {w}"
+
+    # Season-level: against an identical twin, the oracle wins exactly the one
+    # week it acted in — not all 14.
+    rosters = {1: roster, 2: _full_roster("B", 5.0)}
+    lookup.update(_lookup({2: rosters[2]}))
+    weekly = wct.all_play_pct(rosters, lookup, weekly_rosters={1: held})
+    assert weekly[1] == pytest.approx(1 / 14)
+
+
 def test_no_free_agents_means_no_adds():
     roster = _full_roster("A", 5.0)
     lookup = _lookup({1: roster})
