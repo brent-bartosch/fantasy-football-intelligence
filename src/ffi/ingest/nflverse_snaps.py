@@ -142,17 +142,9 @@ class NflverseSnapCountsIngester(BaseIngester):
 
     def store(self, conn, run_id: int, payload) -> None:
         matched = self._resolve(payload)
-        rows = matched.select(
-            [
-                pl.col("gsis_id"),
-                pl.col("season"),
-                pl.col("week"),
-                pl.col("team"),
-                pl.col("position"),
-                pl.col("offense_snaps"),
-                pl.col("offense_pct"),
-            ]
-        ).rows()
+        # Select by DB_COLS so the INSERT column list and the row tuple order
+        # cannot drift apart (same-typed neighbours would swap silently).
+        rows = matched.select(DB_COLS).rows()
         with conn.cursor() as cur:
             cur.execute(
                 "DELETE FROM raw.nflverse_snap_counts WHERE season = ANY(%s)",
