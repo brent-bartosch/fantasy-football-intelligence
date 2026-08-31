@@ -50,6 +50,7 @@ for `scripts/check_file_size.sh` — keep the third column purely numeric.
 |---|---|---|
 | `src/ffi/health.py` | `SourceState` three-state model (OK / KNOWN-LAGGING / BROKEN) + `render_or_refuse`; reads `config/source_clock.yaml`. Leaf: imports nothing internal | 150 |
 | `src/ffi/flags.py` | Single reader of `config/modules.yaml` (per-module enable flags, ADR D8 rollback unit). Leaf | 100 |
+| `src/ffi/joblock.py` | Postgres advisory-lock helper (`pg_try_advisory_lock` poll loop) serializing the morning chain against the Tuesday jobs (R22). Leaf: imports nothing internal | 100 |
 | `src/ffi/ingest/gates.py` | Semantic sanity gates at every ingest boundary: field-set diff, distribution assertions, wk/wk rank correlation ≥0.85. Pure functions; imports no feed it checks | 250 |
 | `src/ffi/usage/` | `usage_weekly` build + trend rules + cold-start variants (package) | 400 |
 | `src/ffi/usage/__init__.py` | Shared value types for the usage package (`UsageRow`, `UsageFrame`, `Rule`, `TrendSignal`, `TrendResult`, `METRICS`). Leaf: imports nothing internal, so build -> trends -> coldstart stays acyclic | 120 |
@@ -106,6 +107,7 @@ topological sort (order below is a valid topological order; every edge points st
 - `src/ffi/yahoo_client.py` → (nothing internal; `yahoo_oauth` + `dotenv`)
 - `src/ffi/health.py` → (nothing internal; `config/source_clock.yaml`)
 - `src/ffi/flags.py` → (nothing internal; `config/modules.yaml`)
+- `src/ffi/joblock.py` → (nothing internal; `hashlib` + `contextlib`)
 - `src/ffi/ingest/gates.py` → (nothing internal)
 
 **Layer 1 — data and domain:**
@@ -135,7 +137,7 @@ topological sort (order below is a valid topological order; every edge points st
 
 **Layer 5 — jobs (top of the graph; nothing imports `scripts/`):**
 
-- `scripts/morning_briefing.py` → `health`, `flags`, `db`, `ids`, `league_state`, `reports/health_section`, `ingest/fantasypros`, `signals_apply` (the last two predate this branch; recorded here so the edge list is not fiction)
+- `scripts/morning_briefing.py` → `health`, `flags`, `joblock`, `db`, `ids`, `league_state`, `reports/health_section`, `ingest/fantasypros`, `signals_apply` (the last two predate this branch; recorded here so the edge list is not fiction)
 - `scripts/run_claims_brief.py`, `scripts/run_trends_report.py` → `reports/` and anything below it
 - `scripts/notify.py` → `db`, `health` (and nothing else internal — it must stay importable from any job)
 - `scripts/probe_yahoo_access.py` → `yahoo_client`, `db`
@@ -143,7 +145,7 @@ topological sort (order below is a valid topological order; every edge points st
 - other `scripts/*` → any `src/ffi` module
 
 **Topological order (acyclic proof — 20 nodes, 80 directed edges, verified by topological sort):**
-`db` → `ids` → `yahoo_client` → `health` → `flags` → `ingest/gates` → `ingest` → `scoring` →
+`db` → `ids` → `yahoo_client` → `health` → `flags` → `joblock` → `ingest/gates` → `ingest` → `scoring` →
 `valuation` → `history` → `sim` → `draft` → `breakout` → `signals_apply` → `usage` →
 `league_state` → `waiver` → `trade_angles` → `reports` → `scripts/*`.
 Every edge above points from a later node to an earlier one. No cycle exists.
@@ -240,6 +242,7 @@ exist are provisional in *name and shape only* — the semantics are fixed by th
 | Source health state | `state(source: str, status: str, age_h: float, clock: SourceClock \| None = None) -> SourceState` (OK / KNOWN_LAGGING / BROKEN); `load_clock(path) -> SourceClock`; `is_alarming(state) -> bool` | `src/ffi/health.py` |
 | Fail-closed rendering | `render_or_refuse(inputs: Mapping[str, SourceState], render: Callable[[], str]) -> str` — emits `NO SIGNAL — <source> <state> since <ts>` instead of computing on a BROKEN input | `src/ffi/health.py` |
 | Module enable flags | `enabled(module: str) -> bool`, `disabled_since(module: str) -> date \| None` | `src/ffi/flags.py` |
+| Job serialization | `acquire_or_wait(conn, name: str, wait_s: float = 900, poll_s: float = 5) -> None`, `advisory_lock(conn, name, ...)` (contextmanager), `release(conn, name)`; raises `JobLockTimeout` | `src/ffi/joblock.py` |
 | Ingest sanity gate | `check(feed: str, snapshot, prior) -> GateResult`; failure raises `GateFailure` and the run is recorded `status='sanity_failed'` | `src/ffi/ingest/gates.py` |
 | League clock | `deadline(event: str, week: int) -> datetime` (tz-aware), `window(event, week) -> tuple[datetime, datetime]`, `fallback_fire_time(job, week) -> datetime` | `src/ffi/league_state/clock.py` |
 | League state read/write | `load_transactions(week) -> list[Transaction]`, `load_rosters(as_of) -> list[RosterRow]`, `record(rows, source, ts_precision) -> None` | `src/ffi/league_state/adapter.py` |

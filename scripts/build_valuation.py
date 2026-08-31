@@ -15,6 +15,7 @@ import json
 
 from ffi.db import connect
 from ffi.ingest.fantasypros import latest_fp_payload
+from ffi.joblock import acquire_or_wait
 from ffi.scoring.config import load_config_v1
 from ffi.valuation.baseline import compute_baselines, compute_replacement_ranks
 from ffi.valuation.starts import load_starts_table, starts_replacement_ranks
@@ -27,6 +28,10 @@ SCENARIOS = {
 }
 
 conn = connect()
+# R22: this script's DELETE+INSERT of valuation.player_value is the read-skew
+# hazard. Holding the lock for the whole process (released when the
+# connection closes at exit) means no reader can straddle the rebuild.
+acquire_or_wait(conn, "ffi.morning_chain", wait_s=900)
 cfg = load_config_v1()
 
 # Starts-based replacement (design 2026-07-21): QB/RB/WR/TE replacement rank =

@@ -27,6 +27,7 @@ import sys
 from ffi import health
 from ffi.db import connect
 from ffi.ingest.fantasypros import fp_calls_today
+from ffi.joblock import acquire_or_wait
 
 # The health-section renderers live in src/ffi/reports/health_section.py: this
 # file is at its ARCHITECTURE §1b budget and they are the part with no
@@ -40,10 +41,6 @@ from ffi.reports.health_section import (
     mark,
 )
 from ffi.signals_apply import CUMULATIVE_CAP, cumulative_pct
-
-# NOTE: the ffi.joblock import and the advisory-lock acquisition are added in
-# Task 11, which creates src/ffi/joblock.py. Do not add them here — the module
-# does not exist yet and this file must import cleanly at the end of Task 4.
 
 # Paths resolve from the file, not the cwd: launchd runs this job from `/`.
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -291,6 +288,10 @@ def build_briefing(conn, clock, now_local, reports_dir, backups_dir=BACKUPS_DIR)
 
 def main() -> None:
     conn = connect()
+    # R22: serialize against build_valuation.py's DELETE+INSERT so the
+    # briefing cannot read half-old, half-new valuation rows. Plan 2's
+    # Tuesday trends job takes the same lock.
+    acquire_or_wait(conn, "ffi.morning_chain", wait_s=900)
     # Load the clock ONCE: state(clock=None) re-parses the YAML on every call.
     clock = health.load_clock(CLOCK_PATH)
     now_local = datetime.datetime.now(datetime.timezone.utc).astimezone(LEAGUE_TZ)
