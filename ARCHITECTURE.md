@@ -361,6 +361,6 @@ if it parses zero rules, but not if it parses one fewer than you wrote.
    (three states, age-aware, config-driven) are unchanged.
 7. §4's `classify(usage: UsageFrame, week)` was provisional. Resolved during
    writing-plans to `classify(frames: Sequence[UsageFrame], week)`: every
-   standard rule has `min_weeks >= 2` (2 to 4), so a single-week frame cannot
+   standard rule has `min_weeks >= 3` (3 to 4), so a single-week frame cannot
    carry the history any of them needs. Only `snap_rise_1wk_cs` runs on one
    week, and it emits WATCH, never ASCENDING. Semantics unchanged.
