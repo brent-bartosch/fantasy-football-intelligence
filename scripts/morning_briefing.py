@@ -27,7 +27,7 @@ import sys
 from ffi import health
 from ffi.db import connect
 from ffi.ingest.fantasypros import fp_calls_today
-from ffi.joblock import acquire_or_wait
+from ffi.joblock import JobLockTimeout, acquire_or_wait
 
 # The health-section renderers live in src/ffi/reports/health_section.py: this
 # file is at its ARCHITECTURE §1b budget and they are the part with no
@@ -47,6 +47,11 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 REPORTS_DIR = REPO_ROOT / "reports"
 BACKUPS_DIR = REPO_ROOT / "backups"
 CLOCK_PATH = REPO_ROOT / "config" / "source_clock.yaml"
+
+# R22 serialization against build_valuation.py's DELETE+INSERT (and Plan 2's
+# Tuesday trends job, which takes the same lock).
+LOCK_NAME = "ffi.morning_chain"
+LOCK_WAIT_S = 900
 
 # Plan 1 deadline rule: a due artifact must have been written since local
 # midnight of its due day. Plan 2 replaces this with
@@ -286,19 +291,63 @@ def build_briefing(conn, clock, now_local, reports_dir, backups_dir=BACKUPS_DIR)
     return L, red_flags
 
 
+def lock_timeout_lines(now_local, wait_s, exc):
+    """The NO-SIGNAL briefing: what the operator reads when the lock never freed.
+
+    "The briefing always renders" is the contract (ADR Domain 5) — an operator
+    who opens reports/ at 07:05 and finds NO file cannot distinguish "the job
+    is fine" from "the job died". A missing artifact is the silent-failure mode
+    the whole dashboard exists to prevent, so lock starvation must produce a
+    file that SAYS it produced nothing, not an absence.
+
+    The health section leads with the RED line: nothing below it was read, so
+    nothing below it can be reported.
+    """
+    return [
+        f"# Morning briefing — {now_local.date().isoformat()}",
+        "\n## Health (NO SIGNAL)",
+        f"- RED: briefing skipped valuation-consistent render — lock "
+        f"{LOCK_NAME!r} held past {wait_s}s "
+        f"(valuation rebuild in progress or hung)",
+        "- No health, artifact, archive, backup or board-input section was "
+        "rendered: reading valuation across a rebuild is exactly what the lock "
+        "prevents, so this briefing reports NOTHING rather than half-old rows.",
+        f"- Diagnose: `SELECT * FROM pg_locks WHERE locktype='advisory'`; then "
+        f"check whether build_valuation.py or the trends job is still running "
+        f"or hung. Re-run `uv run python scripts/morning_briefing.py` once the "
+        f"holder is gone.",
+        f"\n<!-- {exc} -->",
+    ]
+
+
 def main() -> None:
     conn = connect()
-    # R22: serialize against build_valuation.py's DELETE+INSERT so the
-    # briefing cannot read half-old, half-new valuation rows. Plan 2's
-    # Tuesday trends job takes the same lock.
-    acquire_or_wait(conn, "ffi.morning_chain", wait_s=900)
-    # Load the clock ONCE: state(clock=None) re-parses the YAML on every call.
-    clock = health.load_clock(CLOCK_PATH)
     now_local = datetime.datetime.now(datetime.timezone.utc).astimezone(LEAGUE_TZ)
-    L, red_flags = build_briefing(conn, clock, now_local, REPORTS_DIR)
-
     REPORTS_DIR.mkdir(exist_ok=True)
     out = REPORTS_DIR / f"briefing-{now_local.date().isoformat()}.md"
+
+    # R22: serialize against build_valuation.py's DELETE+INSERT so the briefing
+    # cannot read half-old, half-new valuation rows. A timeout still renders —
+    # see lock_timeout_lines().
+    try:
+        acquire_or_wait(conn, LOCK_NAME, wait_s=LOCK_WAIT_S)
+    except JobLockTimeout as exc:
+        out.write_text(
+            "\n".join(lock_timeout_lines(now_local, LOCK_WAIT_S, exc)) + "\n"
+        )
+        print(f"-> {out}")
+        print(
+            "RED FLAGS:",
+            f"lock {LOCK_NAME!r} not acquired after {LOCK_WAIT_S}s — "
+            f"NO-SIGNAL briefing written, nothing was read",
+            sep="\n  - ",
+        )
+        raise SystemExit(1)
+
+    # Load the clock ONCE: state(clock=None) re-parses the YAML on every call.
+    clock = health.load_clock(CLOCK_PATH)
+    L, red_flags = build_briefing(conn, clock, now_local, REPORTS_DIR)
+
     out.write_text("\n".join(L) + "\n")
     print(f"-> {out}")
     if red_flags:

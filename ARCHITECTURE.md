@@ -107,7 +107,7 @@ topological sort (order below is a valid topological order; every edge points st
 - `src/ffi/yahoo_client.py` → (nothing internal; `yahoo_oauth` + `dotenv`)
 - `src/ffi/health.py` → (nothing internal; `config/source_clock.yaml`)
 - `src/ffi/flags.py` → (nothing internal; `config/modules.yaml`)
-- `src/ffi/joblock.py` → (nothing internal; `hashlib` + `contextlib`)
+- `src/ffi/joblock.py` → (nothing internal; `hashlib` + `contextlib` + `time`)
 - `src/ffi/ingest/gates.py` → (nothing internal)
 
 **Layer 1 — data and domain:**
@@ -144,7 +144,7 @@ topological sort (order below is a valid topological order; every edge points st
 - `scripts/ingest_sleeper_trending.py` → `ingest/`, `db`
 - other `scripts/*` → any `src/ffi` module
 
-**Topological order (acyclic proof — 20 nodes, 80 directed edges, verified by topological sort):**
+**Topological order (acyclic proof — 21 nodes, 82 directed edges, verified by topological sort):**
 `db` → `ids` → `yahoo_client` → `health` → `flags` → `joblock` → `ingest/gates` → `ingest` → `scoring` →
 `valuation` → `history` → `sim` → `draft` → `breakout` → `signals_apply` → `usage` →
 `league_state` → `waiver` → `trade_angles` → `reports` → `scripts/*`.

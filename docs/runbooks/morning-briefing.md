@@ -53,6 +53,42 @@ against the 30/day budget (ADR Domain 6). Do not force a run if
 `fp_calls_today + 7` would exceed the budget; wait for the scheduled run or
 the next day instead.
 
+## Operator setup — NOT YET APPLIED as of 2026-08-31
+
+Two things live outside the repo. Neither is code, so nothing in CI can tell
+you they are missing; this section is the only record that they are owed.
+
+**1. Wake the laptop for the 07:00 run (R13).** launchd will run a missed job
+when the machine wakes, but a lid-closed laptop at 07:00 means the briefing
+lands whenever you happen to open it — which is exactly the "artifact absent
+or hours late" condition the freshness assertions red on. Schedule a wake a
+few minutes before the chain starts:
+
+```bash
+sudo pmset repeat wakeorpoweron MTWRFSU 02:25:00
+```
+
+Verify:
+
+```bash
+pmset -g sched
+```
+
+`repeat` (not `schedule`) so the entry survives; the whole-week `MTWRFSU`
+because the chain runs daily. Adjust the time if the chain's start moves.
+
+**2. Offsite backup target (R28).** `FFI_BACKUP_REMOTE` is unset, so
+`scripts/backup_db.sh` **skips the offsite copy** and prints a loud
+`WARN: FFI_BACKUP_REMOTE unset — backups are LAPTOP-ONLY (R28, RPO 24h)`.
+That WARN is the intended behavior of an unconfigured install, not a failure —
+the script still exits 0, because a missing offsite target must never cost the
+local dump. Set it in `.env` to enable the sync:
+
+```bash
+FFI_BACKUP_REMOTE="/Volumes/Backup/fantasy_football/"            # external disk
+FFI_BACKUP_REMOTE="brent@nas.local:/volume1/backups/fantasy_football/"  # or NAS
+```
+
 ## Remove
 
 ```bash

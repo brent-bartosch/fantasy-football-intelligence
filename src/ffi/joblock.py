@@ -57,16 +57,26 @@ def acquire_or_wait(
     while True:
         with conn.cursor() as cur:
             cur.execute("SELECT pg_try_advisory_lock(%s)", (key,))
-            if cur.fetchone()[0]:
-                return
+            got = cur.fetchone()[0]
+        if got:
+            return
+        # A failed probe still opened a transaction. Without this commit the
+        # poller sits idle-in-transaction for the whole wait window, pinning the
+        # xmin horizon and stalling autovacuum while a 45-min rebuild runs. Only
+        # the failing path commits: on success the caller owns the transaction
+        # (and the lock is session-level, so it survives commits regardless).
+        conn.commit()
         attempts += 1
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise JobLockTimeout(
                 f"could not acquire advisory lock {name!r} (key {key}) after "
                 f"{wait_s:.0f}s and {attempts} attempts — another job still holds it. "
                 f"Check `SELECT * FROM pg_locks WHERE locktype='advisory'`."
             )
-        time.sleep(poll_s)
+        # Cap the sleep at the deadline: a 5s poll must not overshoot a 900s
+        # wait to 905s, and a sub-poll_s wait_s must still time out on time.
+        time.sleep(min(poll_s, remaining))
 
 
 def release(conn, name: str) -> None:

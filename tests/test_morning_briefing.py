@@ -333,3 +333,41 @@ def test_expected_season_never_renders_ok_for_a_broken_source(db):
     )
     assert any("[RED] nflverse_player_week: season 2025" in ln for ln in broken_lines)
     assert not any("[OK] nflverse_player_week" in ln for ln in broken_lines)
+
+
+def test_lock_timeout_still_renders_a_no_signal_briefing(tmp_path, monkeypatch):
+    """Lock starvation must produce a file that SAYS nothing was read — never
+    an absent file.
+
+    The Tuesday trends job is documented at 12-45 min from 06:30, so a long run
+    can hold `ffi.morning_chain` past the briefing's 900s wait. Before this,
+    `acquire_or_wait` raised straight out of `main()` and reports/ simply had no
+    briefing that day — indistinguishable, to an operator opening the folder,
+    from a healthy morning. "The briefing always renders" (ADR Domain 5) has to
+    survive the case where it cannot read anything at all.
+    """
+
+    def _timeout(conn, name, wait_s=900, poll_s=5):
+        raise mb.JobLockTimeout(f"could not acquire advisory lock {name!r} (key 1)")
+
+    monkeypatch.setattr(mb, "REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(mb, "connect", lambda *a, **k: object())
+    monkeypatch.setattr(mb, "acquire_or_wait", _timeout)
+
+    with pytest.raises(SystemExit) as excinfo:
+        mb.main()
+
+    assert excinfo.value.code not in (0, None), "a NO-SIGNAL briefing must exit nonzero"
+    written = list(tmp_path.glob("briefing-*.md"))
+    assert len(written) == 1, f"expected exactly one artifact, got {written}"
+    text = written[0].read_text()
+    assert (
+        "RED: briefing skipped valuation-consistent render — lock "
+        "'ffi.morning_chain' held past 900s "
+        "(valuation rebuild in progress or hung)"
+    ) in text
+    # The RED line LEADS the health section — an operator skimming the top of
+    # the file must hit it before anything else.
+    body = [ln for ln in text.splitlines() if ln.strip()]
+    header_i = next(i for i, ln in enumerate(body) if ln.startswith("## Health"))
+    assert "RED: briefing skipped" in body[header_i + 1]

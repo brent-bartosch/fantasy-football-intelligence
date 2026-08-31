@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# .env carries FFI_BACKUP_REMOTE (see the offsite block below). `set -a`
-# exports every assignment; the guard keeps the sourcing side-effect-free
-# if .env is absent.
-if [ -f .env ]; then set -a; . ./.env; set +a; fi
+# NOTE: .env is deliberately NOT sourced here. It is sourced immediately
+# before the offsite block below, so that a malformed .env (a syntax error
+# under `set -e` aborts the script) or a stray PG*/PGDATABASE assignment in it
+# cannot cost us the local dump — the thing this script exists to produce.
 mkdir -p backups
 PG_BIN="${PG_BIN:-/opt/homebrew/opt/postgresql@15/bin}"
 "$PG_BIN/pg_dump" fantasy_football | gzip > "backups/fantasy_football_$(date +%Y%m%d_%H%M%S).sql.gz"
@@ -23,9 +23,14 @@ echo "Backup complete: $(ls -t backups/fantasy_football_*.sql.gz | head -1)"
 #   For a cloud target, swap `rsync` for `rclone copy` and configure the
 #   remote with `rclone config` first.
 #
+# .env is sourced HERE, after the dump is safely on disk. `set -a` exports
+# every assignment; the guard keeps the sourcing side-effect-free if .env is
+# absent.
+#
 # Until it is set this block prints a loud reminder and exits 0 — it must
 # never fail the morning chain, because a missing offsite target is not a
 # reason to lose the local backup too.
+if [ -f .env ]; then set -a; . ./.env; set +a; fi
 if [ -z "${FFI_BACKUP_REMOTE:-}" ]; then
   echo "WARN: FFI_BACKUP_REMOTE unset — backups are LAPTOP-ONLY (R28, RPO 24h)."
   echo "      Set it in .env to enable the offsite copy."
