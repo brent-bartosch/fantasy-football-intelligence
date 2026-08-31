@@ -2,13 +2,23 @@
 .env
 .env.local
 
-# OAuth Tokens
+# OAuth Tokens & secrets (broad: any rename/backup copy, dead-grant or otherwise)
 config/yahoo_token.json
+config/yahoo_oauth.json
+config/*.token
+config/*.oauth*
+config/*oauth*
+config/*token*
+config/*.dead-grant*
+config/*.json.dead-*
 *.token
 
 # SSL Certificates (contain private keys)
 config/localhost.key
 config/localhost.crt
+config/*.key
+config/*.crt
+config/*.pem
 *.key
 *.crt
 *.pem
@@ -57,6 +67,9 @@ data/*.xlsx
 # Live draft event logs (Task 13 — the draft-day source of truth; local only)
 data/draft-logs/
 
+# Manual league-state captures (other managers' names + roster state; ADR 2026-08-30 D3)
+data/captures/
+
 # Temporary files
 tmp/
 temp/
@@ -66,9 +79,6 @@ temp/
 browser-profiles/
 .playwright/
 playwright/.auth/
-
-# Yahoo oauth wrapper token file (Task 6)
-config/yahoo_oauth.json
 
 # Database backups
 backups/
