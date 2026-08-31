@@ -1,0 +1,80 @@
+# config/source_clock.yaml — per-source cadence contracts (ADR Domain 1/5).
+#
+# Read ONLY by src/ffi/health.py (ARCHITECTURE.md §1c). Committed and
+# as_of-stamped: a source's expected cadence is a decision, not a constant
+# someone can adjust in a hotfix.
+#
+# state() semantics, per source:
+#   OK             age_h <= expected_interval_h + lag_window_h
+#   KNOWN-LAGGING  <= deadline_h            (quiet timestamp line; no banner)
+#   BROKEN         > deadline_h, or a non-success run status
+#
+# The three-state model exists because two of three sources lag structurally
+# most weeks (R12): a binary DEGRADED banner is on every report by week 2 and
+# a real outage hides inside it.
+as_of: 2026-08-31
+
+sources:
+  sleeper_projections:
+    expected_interval_h: 24
+    lag_window_h: 6
+    deadline_h: 48
+    owner: sleeper
+
+  sleeper_trending:
+    expected_interval_h: 24
+    lag_window_h: 6
+    deadline_h: 48
+    owner: sleeper
+
+  nflverse_player_week:
+    # nflverse publishes ~1 day after MNF, every week (R5). That lag is
+    # STRUCTURAL, not a fault: it renders as a quiet line, not a banner.
+    expected_interval_h: 24
+    lag_window_h: 36
+    deadline_h: 96
+    owner: nflverse
+    # FLIP TO 2026 ON 2026-09-16, together with FFI_NFLVERSE_SEASONS in
+    # scripts/morning_chain.sh. Until then the briefing's expected-season
+    # line is the reminder; after 2026-09-16 it is the alarm.
+    expected_season: 2025
+
+  nflverse_snap_counts:
+    expected_interval_h: 24
+    lag_window_h: 36
+    deadline_h: 96
+    owner: nflverse
+    expected_season: 2025
+
+  fp_news:
+    # Declared now, consumed when scripts/ingest_fp_news.py starts writing
+    # raw.ingest_runs rows (Plan 2). A source with no contract raises
+    # UnknownSourceError, so the contract must exist before the rows do.
+    expected_interval_h: 24
+    lag_window_h: 6
+    deadline_h: 48
+    owner: fantasypros
+
+  backup:
+    # Not a raw.ingest_runs source: scripts/morning_briefing.py derives its
+    # age from the newest backups/fantasy_football_*.sql.gz mtime. Same
+    # three-state treatment so the dashboard has one vocabulary.
+    expected_interval_h: 24
+    lag_window_h: 12
+    deadline_h: 48
+    owner: operator
+
+artifacts:
+  # Artifact-freshness assertions (ADR Domain 5): a missed job must be
+  # distinguishable from an unread report (R13). `active_from` is the date
+  # the renderer ships (Plan 2) — before it, the briefing renders a PENDING
+  # line rather than a RED one, because asserting on an artifact nobody has
+  # built yet is exactly the banner fatigue R12 warns about.
+  claims:
+    glob: "reports/claims-*.md"
+    due_weekday: monday
+    active_from: 2026-09-14
+  trends:
+    glob: "reports/trends-*.md"
+    due_weekday: tuesday
+    active_from: 2026-09-15

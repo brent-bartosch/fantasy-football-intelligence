@@ -235,7 +235,7 @@ exist are provisional in *name and shape only* — the semantics are fixed by th
 | Postgres access | `connect(dbname: str \| None = None) -> psycopg2.connection` | `src/ffi/db.py` |
 | Yahoo transport | `get_session()`, `ensure_fresh_token(sc, margin_s=900) -> bool`, `yahoo_call(fn, *args, **kwargs)` | `src/ffi/yahoo_client.py` |
 | Player identity | `player_key(game_code, player_id) -> str`, `normalize_team_abbr(abbr) -> str` | `src/ffi/ids.py` |
-| Source health state | `state(source: str, status: str, last_success_at: datetime, now: datetime) -> SourceState` (OK / KNOWN_LAGGING / BROKEN) | `src/ffi/health.py` |
+| Source health state | `state(source: str, status: str, age_h: float, clock: SourceClock \| None = None) -> SourceState` (OK / KNOWN_LAGGING / BROKEN); `load_clock(path) -> SourceClock`; `is_alarming(state) -> bool` | `src/ffi/health.py` |
 | Fail-closed rendering | `render_or_refuse(inputs: Mapping[str, SourceState], render: Callable[[], str]) -> str` — emits `NO SIGNAL — <source> <state> since <ts>` instead of computing on a BROKEN input | `src/ffi/health.py` |
 | Module enable flags | `enabled(module: str) -> bool`, `disabled_since(module: str) -> date \| None` | `src/ffi/flags.py` |
 | Ingest sanity gate | `check(feed: str, snapshot, prior) -> GateResult`; failure raises `GateFailure` and the run is recorded `status='sanity_failed'` | `src/ffi/ingest/gates.py` |
@@ -351,3 +351,9 @@ if it parses zero rules, but not if it parses one fewer than you wrote.
    TBD). Define once against the 2025 replay and freeze before any threshold tuning.
 5. `src/ffi/reports/` as the renderer package location is an inference: `reports/` at the repo root is
    an artifact directory and must stay code-free. Confirm during writing-plans.
+6. §4's health signature was provisional ("provisional in name and shape only").
+   Resolved during writing-plans to `state(source, status, age_h, clock)`:
+   `raw.ingest_runs` is queried with `extract(epoch FROM now() - started_at)/3600`
+   and never returns a `last_success_at` timestamp, so a `(datetime, datetime)`
+   signature would force every caller to reconstruct one. Semantics
+   (three states, age-aware, config-driven) are unchanged.
