@@ -6,9 +6,7 @@ R1 is the bug this exists to kill: scripts/morning_briefing.py rendered
 nflverse [OK] for 50 days because the health loop tested `status` and never
 `age_h` — on the same line that computed and printed `age_h`.
 
-OK / KNOWN-LAGGING / BROKEN, not OK / DEGRADED: two of three sources lag
-structurally most weeks, so a binary banner is on every report by week 2 and
-a real outage hides inside it (R12). Only BROKEN is alarming.
+OK / KNOWN-LAGGING / BROKEN, not OK / DEGRADED — only BROKEN is alarming (R12).
 """
 
 from __future__ import annotations
@@ -144,3 +142,9 @@ def state(
 def is_alarming(s: SourceState) -> bool:
     """Only BROKEN gets a banner. Structural lag gets a quiet line (R12)."""
     return s is SourceState.BROKEN
+
+
+def render_or_refuse(inputs, render):
+    """Fail-closed composite rendering (ADR §3a): refuse on any BROKEN input."""
+    broken = [f"{src} {st.value}" for src, st in inputs.items() if is_alarming(st)]
+    return f"NO SIGNAL — {'; '.join(broken)}" if broken else render()

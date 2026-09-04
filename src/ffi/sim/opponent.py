@@ -52,7 +52,10 @@ ROSTER_DAMP = {
 # Starter slots per position (+1 FLEX eligible for RB/WR/TE). Deliberately
 # separate from any STARTERS in ffi.valuation — that module's STARTERS serves
 # a different (non-flex-aware) purpose and the two must not be conflated.
+# This is the NAJEE (2-QB) default; 1-QB leagues (LMU) pass their own starters
+# via the `starters` kwarg on required_picks/feasible/opponent_pick.
 STARTERS = {"QB": 2, "RB": 2, "WR": 3, "TE": 1, "K": 1, "DEF": 1}
+FLEX_ELIG = ("RB", "WR", "TE")
 
 
 @dataclass(frozen=True)
@@ -81,27 +84,28 @@ class OpponentParams:
 DEFAULT_OPPONENT_PARAMS = OpponentParams()
 
 
-def required_picks(counts: dict) -> int:
+def required_picks(counts: dict, starters: dict | None = None) -> int:
     """How many more picks are needed to fill every starter slot + FLEX.
 
     FLEX (RB/WR/TE) is considered filled once any of those three positions
     has been drafted beyond its own starter requirement (a surplus RB, WR,
     or TE can occupy FLEX) — it does not require a dedicated pick.
     """
-    need = sum(max(0, req - counts.get(p, 0)) for p, req in STARTERS.items())
-    flex_surplus = (
-        max(0, counts.get("RB", 0) - 2)
-        + max(0, counts.get("WR", 0) - 3)
-        + max(0, counts.get("TE", 0) - 1)
+    starters = starters or STARTERS
+    need = sum(max(0, req - counts.get(p, 0)) for p, req in starters.items())
+    flex_surplus = sum(
+        max(0, counts.get(p, 0) - starters.get(p, 0)) for p in FLEX_ELIG
     )
     return need + (0 if flex_surplus >= 1 else 1)
 
 
-def feasible(counts: dict, pos: str, picks_left_after: int) -> bool:
+def feasible(
+    counts: dict, pos: str, picks_left_after: int, starters: dict | None = None
+) -> bool:
     """Would taking `pos` now still leave enough picks to fill the roster?"""
     c2 = dict(counts)
     c2[pos] = c2.get(pos, 0) + 1
-    return required_picks(c2) <= picks_left_after
+    return required_picks(c2, starters) <= picks_left_after
 
 
 def opponent_pick(
@@ -113,6 +117,7 @@ def opponent_pick(
     picks_left_after: int,
     rng: np.random.Generator,
     params: OpponentParams | None = None,
+    starters: dict | None = None,
 ) -> PoolPlayer:
     """Simulate one opponent draft pick.
 
@@ -124,12 +129,13 @@ def opponent_pick(
     `picks_left_after` (should never happen in a well-formed draft).
     """
     params = params or DEFAULT_OPPONENT_PARAMS
+    starters = starters or STARTERS
     share = priors.pos_share[(slot, round_)]
     scale_map = dict(params.pos_need_scale)
     weights = {}
     for pos in POSITIONS:
         cands = avail_by_pos.get(pos) or []
-        if not cands or not feasible(counts, pos, picks_left_after):
+        if not cands or not feasible(counts, pos, picks_left_after, starters):
             continue
         w = share.get(pos, 0.0)
         damp = ROSTER_DAMP.get(pos, {})

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.ffi.claims</string>
+  <key>WorkingDirectory</key><string>/Users/brentbartosch/Development/fantasy_football</string>
+  <!-- Monday-evening claims brief, ahead of the Tuesday waiver run. The fire
+       time is the league clock's hard fallback (deadline("waivers") - 6h =
+       Monday 18:00 local) — a missed claim deadline is not recoverable, so the
+       job fails loud via a nonzero exit rather than silently skipping. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string><string>-lc</string>
+    <string>uv run python scripts/run_claims_brief.py</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>logs/launchd-claims.log</string>
+  <key>StandardErrorPath</key><string>logs/launchd-claims.err</string>
+</dict></plist>

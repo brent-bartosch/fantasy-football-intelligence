@@ -59,11 +59,12 @@ def load_starts_table(path: pathlib.Path | str | None = None) -> dict:
     return table
 
 
-def starts_replacement_ranks(table: dict) -> dict:
-    """{pos: round(12 x sum_slot P_start[pos][slot])} for QB/RB/WR/TE
-    (QB24/RB36/WR36/TE12). Only the starts-based positions are returned."""
+def starts_replacement_ranks(table: dict, teams: int = 12) -> dict:
+    """{pos: round(teams x sum_slot P_start[pos][slot])} for QB/RB/WR/TE
+    (12 teams -> QB24/RB36/WR36/TE12). Only the starts-based positions are
+    returned. `teams` parameterizes for a second league shape (e.g. 14)."""
     return {
-        pos: int(round(12 * sum(table[pos].values())))
+        pos: int(round(teams * sum(table[pos].values())))
         for pos in STARTS_POSITIONS
         if pos in table
     }

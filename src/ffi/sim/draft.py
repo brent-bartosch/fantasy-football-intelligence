@@ -75,17 +75,17 @@ class DraftResult:
 PickFn = Callable[[dict[str, list[PoolPlayer]], int, dict[str, int], int], PoolPlayer]
 
 
-def snake_position(overall: int) -> tuple[int, int]:
-    """1-indexed overall pick number -> (round 1-19, draft position 1-12).
+def snake_position(overall: int, teams: int = TEAMS) -> tuple[int, int]:
+    """1-indexed overall pick number -> (round, draft position).
 
-    Odd rounds run ascending (position 1 picks first, 12 picks last); even
-    rounds reverse (12 first, 1 last) — standard snake order, with position
-    p's back-to-back picks at a round boundary (e.g. position 12 picks last
-    in round 1 and first in round 2).
+    Odd rounds run ascending (position 1 picks first, `teams` picks last);
+    even rounds reverse — standard snake order, with position p's back-to-back
+    picks at a round boundary (e.g. position 12 picks last in round 1 and
+    first in round 2). `teams` defaults to NAJEE (12); pass 14 for LMU.
     """
-    round_ = (overall - 1) // TEAMS + 1
-    idx = (overall - 1) % TEAMS  # 0-indexed pick-within-round
-    position = idx + 1 if round_ % 2 == 1 else TEAMS - idx
+    round_ = (overall - 1) // teams + 1
+    idx = (overall - 1) % teams  # 0-indexed pick-within-round
+    position = idx + 1 if round_ % 2 == 1 else teams - idx
     return round_, position
 
 
@@ -122,10 +122,11 @@ def _resolve_slot_of_position(
     rng: np.random.Generator,
     our_franchise_slot: int,
     our_position: int | None,
+    teams: int = TEAMS,
 ) -> tuple[dict[int, int], int]:
-    """Permute franchise slots 1-12 onto draft positions 1-12. Returns
-    (slot_of_position, resolved_our_position)."""
-    all_slots = list(range(1, TEAMS + 1))
+    """Permute franchise slots 1-`teams` onto draft positions 1-`teams`.
+    Returns (slot_of_position, resolved_our_position)."""
+    all_slots = list(range(1, teams + 1))
     if our_position is not None:
         remaining_slots = [s for s in all_slots if s != our_franchise_slot]
         remaining_positions = [p for p in all_slots if p != our_position]
@@ -151,29 +152,34 @@ def run_draft(
     our_franchise_slot: int = 12,
     our_position: int | None = None,
     opponent_params: OpponentParams | None = None,
+    teams: int = TEAMS,
+    rounds: int = ROUNDS,
+    starters: dict | None = None,
 ) -> DraftResult:
-    """Simulate one full 12-team, 19-round snake draft.
+    """Simulate one full snake draft (NAJEE default 12 teams x 19 rounds).
 
     A single `np.random.default_rng(seed)` drives the franchise-slot
     permutation and every opponent pick, in overall-pick order — same seed,
-    same pool, same priors -> byte-identical draft.
+    same pool, same priors -> byte-identical draft. `teams`/`rounds`/`starters`
+    parameterize for a second league (LMU: 14 x 18, 1-QB).
     """
     rng = np.random.default_rng(seed)
+    total_picks = teams * rounds
     slot_of_position, resolved_our_position = _resolve_slot_of_position(
-        rng, our_franchise_slot, our_position
+        rng, our_franchise_slot, our_position, teams
     )
 
     sorted_pool = _build_sorted_pool(pool)
     taken: set = set()
-    rosters: dict[int, list[PoolPlayer]] = {pos: [] for pos in range(1, TEAMS + 1)}
-    counts: dict[int, dict[str, int]] = {pos: {} for pos in range(1, TEAMS + 1)}
+    rosters: dict[int, list[PoolPlayer]] = {pos: [] for pos in range(1, teams + 1)}
+    counts: dict[int, dict[str, int]] = {pos: {} for pos in range(1, teams + 1)}
     picks: list[dict] = []
 
-    for overall in range(1, TOTAL_PICKS + 1):
-        round_, position = snake_position(overall)
+    for overall in range(1, total_picks + 1):
+        round_, position = snake_position(overall, teams)
         franchise_slot = slot_of_position[position]
         seat_counts = counts[position]
-        picks_left_after = ROUNDS - round_
+        picks_left_after = rounds - round_
         avail_by_pos = _avail_view(sorted_pool, taken)
 
         if position == resolved_our_position:
@@ -185,7 +191,7 @@ def run_draft(
                     f"{pick.ref!r} ({pick.position}) at overall pick {overall} "
                     f"(round {round_}, position {position})"
                 )
-            if not feasible(seat_counts, pick.position, picks_left_after):
+            if not feasible(seat_counts, pick.position, picks_left_after, starters):
                 raise ValueError(
                     f"our_pick_fn returned an infeasible pick {pick.ref!r} "
                     f"({pick.position}) at overall pick {overall}: "
@@ -201,6 +207,7 @@ def run_draft(
                 picks_left_after,
                 rng,
                 params=opponent_params,
+                starters=starters,
             )
 
         taken.add(pick.ref)

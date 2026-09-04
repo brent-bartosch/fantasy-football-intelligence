@@ -29,10 +29,11 @@ from pathlib import Path
 from cheat_sheet_html import ORDER  # shared column order (RB,WR,QB,TE,DEF,K)
 from ffi.breakout import attach, load_notes
 from ffi.db import connect
-from ffi.scoring.config import load_config_v1
+from ffi.draft.console_config import resolve, resolve_marks
+from ffi.scoring.config import load_config_by_version
 from ffi.sim.draft import ROUNDS, TEAMS, _avail_view, _build_sorted_pool, run_draft
 from ffi.sim.pool import build_pool
-from ffi.sim.priors import build_slot_priors
+from ffi.sim.priors import build_slot_priors, flat_slot_priors
 from ffi.sim.strategy import (
     DEPLOYED_PARAMS,
     adp_sort_key,
@@ -41,24 +42,24 @@ from ffi.sim.strategy import (
     rule4_candidates,
 )
 from ffi.sim.opponent import CAND_WINDOW, STARTERS
-from ffi.valuation.starts import CANONICAL_TABLE_PATH, load_starts_table
+from ffi.valuation.starts import load_starts_table
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Engine pool depth per position: deep enough that a full 228-pick draft never
 # exhausts a position (run_draft would raise) and the top-CAND_WINDOW candidate
 # window is never truncated. The board DISPLAYS only the shallower DISPLAY_DEPTH.
-ENGINE_DEPTH = {"QB": 40, "RB": 100, "WR": 110, "TE": 40, "DEF": 20, "K": 20}
-DISPLAY_DEPTH = {"QB": 30, "RB": 55, "WR": 60, "TE": 26, "DEF": 16, "K": 15}
+#
+# 2026-08-29: QB was 40, but our league's 2025 draft (the only clean 12-team /
+# 228-pick sample) consumed 46 QBs -- a 2QB league exhausts QB before any other
+# position, so the old value could truncate mid-draft exactly as the comment
+# above promised it would not. Raised past observed demand with headroom.
+# Other positions re-checked against 2025 actuals (RB 69 · WR 72 · TE 20 ·
+# DEF 12 · K 9) and were already clear.
+ENGINE_DEPTH = {"QB": 60, "RB": 130, "WR": 160, "TE": 55, "DEF": 32, "K": 25}
+DISPLAY_DEPTH = {"QB": 36, "RB": 85, "WR": 110, "TE": 36, "DEF": 20, "K": 20}
 GOLDEN_SLOT = 5  # the scripted-draft seat for the drift-guard golden trace
 GOLDEN_SEED = 20260722
-
-PLAYBOOK = (
-    "RB scarce (steep cliff) — draft early. · WR deep & flat — wait, get volume. · "
-    "QB deep — get 2 startable (forced R2/R5), QB3 R14+. · TE: 1 starter + 1 backup. · "
-    "K/DEF last. · The panel is the deployed A′ engine; take its #1 unless you have a read."
-)
-
 
 # ---------------------------------------------------------------------------
 # Baked pool
@@ -130,16 +131,12 @@ def _signature(rec: dict, top5: list) -> str:
     return f"{rec['id']}|{rec['rule']}||{body}"
 
 
-def console_suggestions(avail_by_pos, round_, counts, picks_left_after) -> dict:
+def console_suggestions(avail_by_pos, round_, counts, picks_left_after, params=DEPLOYED_PARAMS) -> dict:
     """The panel state at one of MY picks: the deployed pick (`recommended`,
     with the rule that fired) + the top-5 rule-4 value candidates
     (P_start[pos][k+1] x vorp), sorted deterministically like `_pick_best`."""
-    pick, rule = evaluate_rules(
-        avail_by_pos, round_, counts, picks_left_after, DEPLOYED_PARAMS
-    )
-    scored = rule4_candidates(
-        avail_by_pos, round_, counts, picks_left_after, DEPLOYED_PARAMS
-    )
+    pick, rule = evaluate_rules(avail_by_pos, round_, counts, picks_left_after, params)
+    scored = rule4_candidates(avail_by_pos, round_, counts, picks_left_after, params)
     scored.sort(key=lambda sp: (-sp[0], adp_sort_key(sp[1]), sp[1].name))
     top5 = [
         {
@@ -162,19 +159,23 @@ def console_suggestions(avail_by_pos, round_, counts, picks_left_after) -> dict:
     }
 
 
-def generate_golden(pool, priors) -> tuple:
+def generate_golden(pool, priors, params=DEPLOYED_PARAMS, teams=TEAMS, rounds=ROUNDS) -> tuple:
     """Run a real deployed draft (our seat pinned to GOLDEN_SLOT) over the baked
     pool, and record (removals, golden) where `removals` is the ordered
     [{id, mine}] every player leaves the board in, and `golden` is the panel
-    state at each of MY 19 picks. The recommended pick at each state IS the
+    state at each of MY picks. The recommended pick at each state IS the
     deployed pick that run_draft made (self-consistency baked in)."""
+    starters = dict(params.starters)
     res = run_draft(
         pool,
         priors,
-        make_strategy_fn(DEPLOYED_PARAMS),
+        make_strategy_fn(params),
         seed=GOLDEN_SEED,
         our_franchise_slot=GOLDEN_SLOT,
         our_position=GOLDEN_SLOT,
+        teams=teams,
+        rounds=rounds,
+        starters=starters,
     )
     sorted_pool = _build_sorted_pool(pool)
     taken: set = set()
@@ -184,9 +185,9 @@ def generate_golden(pool, priors) -> tuple:
         mine = pk["position_slot"] == res.our_position
         if mine:
             round_ = len(golden) + 1  # our k-th pick is in round k
-            picks_left_after = ROUNDS - round_
+            picks_left_after = rounds - round_
             avail = _avail_view(sorted_pool, taken)
-            sug = console_suggestions(avail, round_, counts, picks_left_after)
+            sug = console_suggestions(avail, round_, counts, picks_left_after, params)
             if sug["recommended"]["id"] != pk["ref"]:
                 raise ValueError(
                     f"golden trace inconsistency at my pick {round_}: engine "
@@ -221,63 +222,78 @@ def git_sha() -> str:
     return f"{sha}{'-dirty' if dirty else ''}"
 
 
-def valuation_snapshot(conn) -> int | None:
+def valuation_snapshot(conn, scenario: str, config_version: int) -> int | None:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT max((params->>'snapshot_id')::int) FROM valuation.player_value "
-            "WHERE scenario='qb_hoard_12' AND config_version=%s",
-            (load_config_v1().version,),
+            "WHERE scenario=%s AND config_version=%s",
+            (scenario, config_version),
         )
         row = cur.fetchone()
     return int(row[0]) if row and row[0] is not None else None
 
 
-def deployed_meta(table: dict) -> dict:
-    caps = {p: c for p, c in DEPLOYED_PARAMS.caps}
+def deployed_meta(table: dict, params=DEPLOYED_PARAMS, starters=STARTERS, teams=TEAMS,
+                  rounds=ROUNDS, roster_shape="2QB/2RB/3WR/1TE/1FLEX/1K/1DEF/8BN (19 rounds)") -> dict:
+    caps = {p: c for p, c in params.caps}
     weights = {
         pos: [v for _, v in [(s, table[pos][s]) for s in sorted(table[pos])]]
         for pos in ("QB", "RB", "WR", "TE", "K", "DEF")
         if pos in table
     }
     return {
-        "qb_by_round": list(DEPLOYED_PARAMS.qb_by_round),
-        "qb_not_before": list(DEPLOYED_PARAMS.qb_not_before),
-        "defk_round": DEPLOYED_PARAMS.defk_round,
+        "qb_by_round": list(params.qb_by_round),
+        "qb_not_before": list(params.qb_not_before),
+        "defk_round": params.defk_round,
         "caps": caps,
-        "starters": STARTERS,
+        "starters": dict(starters),
         "positions": ["QB", "RB", "WR", "TE", "K", "DEF"],
         "cand_window": CAND_WINDOW,
-        "rounds": ROUNDS,
-        "teams": TEAMS,
-        "roster_shape": "2QB/2RB/3WR/1TE/1FLEX/1K/1DEF/8BN (19 rounds)",
+        "rounds": rounds,
+        "teams": teams,
+        "roster_shape": roster_shape,
         "pstart_weights": weights,
     }
 
 
-# ---------------------------------------------------------------------------
-# Build
-# ---------------------------------------------------------------------------
+# ---- Build ---------------------------------------------------------------
+def build_page(profile_name: str = "najee", marks_spec: dict | None = None) -> tuple[str, dict]:
+    cfg = resolve(profile_name)
+    profile = cfg.profile
 
-
-def build_page() -> tuple[str, dict]:
     conn = connect()
-    table = load_starts_table(CANONICAL_TABLE_PATH)  # fail-loud on mode mismatch
-    pool = build_pool(conn, "qb_hoard_12")
+    table = load_starts_table(cfg.starts_path)  # fail-loud on mode mismatch
+    pool = build_pool(
+        conn,
+        profile.scenario,
+        config_version=profile.config_version,
+        adp_field=profile.adp_field,
+        qb_sanity_min=profile.qb_sanity_min,
+    )
     baked = restricted_pool(pool)
-    # Breakout notes attach against ENGINE_DEPTH, not DISPLAY_DEPTH: the console
-    # shows DISPLAY_DEPTH *available* rows, so deeper noted players (e.g. a WR
-    # ranked 67th) scroll into view as the board empties -- any baked player can
-    # render. Fail-loud if a note can't land on a baked player.
+    initial = resolve_marks(baked, marks_spec)
+    # Breakout notes attach against ENGINE_DEPTH (deeper noted players scroll into view as the board empties).
     notes = attach(load_notes(), baked, ENGINE_DEPTH)
-    priors = build_slot_priors(conn)
-    removals, golden = generate_golden(baked, priors)
+    priors = flat_slot_priors(profile.teams, profile.rounds) if profile_name == "lmu" else build_slot_priors(conn)
+    removals, golden = generate_golden(
+        baked, priors, params=cfg.params, teams=profile.teams, rounds=profile.rounds
+    )
 
     meta = {
         "date": datetime.date.today().isoformat(),
         "git_sha": git_sha(),
-        "valuation_snapshot_id": valuation_snapshot(conn),
+        "valuation_snapshot_id": valuation_snapshot(
+            conn, profile.scenario, profile.config_version
+        ),
         "pstart_meta": table["_meta"],
-        "deployed": deployed_meta(table),
+        "deployed": deployed_meta(
+            table,
+            params=cfg.params,
+            starters=profile.starters,
+            teams=profile.teams,
+            rounds=profile.rounds,
+            roster_shape=cfg.roster_shape,
+        ),
         "golden_slot": GOLDEN_SLOT,
         "display_depth": DISPLAY_DEPTH,
     }
@@ -287,10 +303,11 @@ def build_page() -> tuple[str, dict]:
         "ORDER": ORDER,
         "REMOVALS": removals,
         "GOLDEN": golden,
+        "INITIAL": initial,
     }
     page = (
         PAGE.replace("/*__BAKE__*/", json.dumps(baked_json))
-        .replace("{play}", html.escape(PLAYBOOK))
+        .replace("{play}", html.escape(cfg.playbook))
         .replace("{date}", meta["date"])
     )
     summary = {
@@ -308,75 +325,78 @@ PAGE = r"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Live Draft Console — {date}</title>
 <style>
-:root{--bg:#0f1419;--card:#1a2029;--ink:#e6edf3;--dim:#8b98a5;--acc:#1f6feb;
---t1:#2ea043;--t2:#1f6feb;--t3:#8957e5;--t4:#9e6a03;--t5:#6e7681;--t6:#484f58;
---ok:#2ea043;--bad:#f85149;--warn:#d29922;}
+:root{--bg:#ffffff;--card:#ffffff;--ink:#1f2328;--dim:#57606a;--mute:#8b949e;--acc:#0969da;
+--t1:#1a7f37;--t2:#0969da;--t3:#8250df;--t4:#9a6700;--t5:#6e7781;--t6:#afb8c1;
+--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700;}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.35 -apple-system,Segoe UI,Roboto,sans-serif}
-header{position:sticky;top:0;z-index:6;background:#0b0f14;padding:8px 12px;border-bottom:1px solid #222}
-h1{margin:0 0 3px;font-size:15px}
-.play{color:var(--dim);font-size:11px;margin-bottom:6px}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 -apple-system,Segoe UI,Roboto,sans-serif}
+header{position:sticky;top:0;z-index:6;background:#f6f8fa;padding:8px 12px;border-bottom:1px solid #d0d7de}
+h1{margin:0 0 3px;font-size:16px;font-weight:700}
+.play{color:var(--dim);font-size:12px;margin-bottom:6px}
 .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-input{flex:1;min-width:180px;max-width:320px;background:var(--card);border:1px solid #30363d;color:var(--ink);padding:6px 10px;border-radius:6px;font-size:13px}
-button{background:var(--card);border:1px solid #30363d;color:var(--ink);padding:6px 10px;border-radius:6px;cursor:pointer}
-button:hover{border-color:#58a6ff}
-.cnt{color:var(--dim);font-size:11px}
-#badge{font-size:11px;padding:3px 8px;border-radius:6px;font-weight:600}
-#badge.ok{background:#0d2b17;color:var(--ok);border:1px solid var(--ok)}
-#badge.bad{background:#3a0d0d;color:var(--bad);border:1px solid var(--bad)}
-#qmsg{font-size:11px;min-width:120px;color:var(--ok)}
+input{flex:1;min-width:180px;max-width:320px;background:var(--card);border:1px solid #d0d7de;color:var(--ink);padding:6px 10px;border-radius:6px;font-size:14px}
+button{background:var(--card);border:1px solid #d0d7de;color:var(--ink);padding:6px 10px;border-radius:6px;cursor:pointer}
+button:hover{border-color:#0969da;background:#f6f8fa}
+.cnt{color:var(--dim);font-size:12px}
+#badge{font-size:12px;padding:3px 8px;border-radius:6px;font-weight:700}
+#badge.ok{background:#dafbe1;color:var(--ok);border:1px solid var(--ok)}
+#badge.bad{background:#ffebe9;color:var(--bad);border:1px solid var(--bad)}
+#qmsg{font-size:12px;min-width:120px;color:var(--ok)}
 #qmsg.bad{color:var(--bad)}
 /* breakout notes: annotations only — badges never touch engine numbers */
 .bo{flex:none;width:12px;height:12px;line-height:12px;border-radius:2px;font-size:9px;
-font-weight:700;text-align:center;color:#0b0f14;cursor:pointer}
-.bo-situation{background:#d29922}.bo-post-injury{background:#f85149}
-.bo-year-n-leap{background:#3fb950}.bo-role-path{background:#58a6ff}
-.note{padding:5px 8px 7px 24px;background:#141b24;border-left:3px solid #30363d;font-size:11px;color:#c9d1d9}
-.note b{color:#8b98a5;font-weight:600}
-.note .kill{color:#d29922;display:block;margin-top:3px}
+font-weight:700;text-align:center;color:#fff;cursor:pointer}
+.bo-situation{background:#9a6700}.bo-post-injury{background:#cf222e}
+.bo-year-n-leap{background:#1a7f37}.bo-role-path{background:#0969da}
+.note{padding:5px 8px 7px 24px;background:#f6f8fa;border-left:3px solid #d0d7de;font-size:12px;color:#1f2328}
+.note b{color:var(--dim);font-weight:600}
+.note .kill{color:#9a6700;display:block;margin-top:3px}
 #driftbanner{display:none;background:var(--bad);color:#fff;padding:8px 12px;font-weight:700;text-align:center}
 #driftbanner.show{display:block}
 .wrap{display:flex;gap:8px;padding:8px;align-items:flex-start}
-.cols{display:flex;gap:8px;overflow-x:auto;align-items:flex-start;flex:1}
-.col{background:var(--card);border-radius:8px;min-width:200px;flex:1;overflow:hidden}
-.col h2{margin:0;font-size:12px;padding:6px 8px;background:#11161d;position:sticky;top:0}
-.col .list{max-height:78vh;overflow:auto}
+.cols{display:flex;flex-direction:column;gap:10px;flex:1;min-width:0}
+.rg{margin:2px 2px 0;color:var(--dim);font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.rg.low{color:var(--mute)}
+.rowgroup{display:flex;gap:8px;align-items:flex-start}
+.col{background:var(--card);border:1px solid #d0d7de;border-radius:8px;min-width:0;flex:1;overflow:hidden}
+.col h2{margin:0;font-size:13px;font-weight:700;padding:6px 8px;background:#f6f8fa;border-bottom:1px solid #d0d7de}
+.col .list{max-height:68vh;overflow:auto}
 .row{display:flex;align-items:center;gap:5px;padding:3px 8px;border-left:3px solid var(--t6);cursor:pointer}
-.row:hover{background:#222b36}
-.row.d{opacity:.3;text-decoration:line-through}
-.row.mine{background:#0d2b17}
+.row:hover{background:#f6f8fa}
+.row.d{opacity:.5;text-decoration:line-through}
+.row.mine{background:#dafbe1}
 .gone .nm{color:var(--warn)}
-.rk{color:var(--dim);width:20px;text-align:right;font-variant-numeric:tabular-nums}
-.nm{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.num{color:var(--dim);font-size:11px;font-variant-numeric:tabular-nums}
+.rk{color:var(--dim);width:20px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px}
+.nm{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14px;font-weight:600}
+.num{color:var(--dim);font-size:12px;font-weight:500;font-variant-numeric:tabular-nums}
 .adp{width:32px;text-align:right}
-.mp{flex:none;width:26px;padding:1px 0;text-align:center;color:var(--acc);font-weight:700;cursor:pointer;border:1px solid #30363d;border-radius:5px;background:#11161d;font-size:13px}
-.mp:hover{border-color:var(--acc);background:#182231}
+.mp{flex:none;width:28px;padding:1px 0;text-align:center;color:var(--acc);font-weight:700;cursor:pointer;border:1px solid #d0d7de;border-radius:5px;background:#f6f8fa;font-size:15px}
+.mp:hover{border-color:var(--acc);background:#ddf4ff}
 .t1{border-left-color:var(--t1)}.t2{border-left-color:var(--t2)}.t3{border-left-color:var(--t3)}
 .t4{border-left-color:var(--t4)}.t5{border-left-color:var(--t5)}.t6{border-left-color:var(--t6)}
-.hi{background:#243b53}
-#panel{width:320px;flex:none;background:var(--card);border-radius:8px;padding:10px;position:sticky;top:56px;max-height:calc(100vh - 64px);overflow:auto}
+.hi{background:#ddf4ff}
+#panel{width:320px;flex:none;background:var(--card);border:1px solid #d0d7de;border-radius:8px;padding:10px;position:sticky;top:56px;max-height:calc(100vh - 64px);overflow:auto}
 #panel h3{margin:0 0 6px;font-size:13px}
-.status{font-size:12px;color:var(--dim);margin-bottom:8px}
+.status{font-size:13px;color:var(--dim);margin-bottom:8px}
 .status b{color:var(--ink)}
-.rhead{font-size:12px;font-weight:600;margin:12px 0 4px;border-top:1px solid #222;padding-top:8px}
-.rs{display:flex;align-items:center;gap:8px;padding:3px 6px;border-radius:5px;font-size:12.5px;margin-bottom:1px}
-.rs.filled{background:#11161d}
-.rs.empty{opacity:.45}
-.rslot{width:42px;flex:none;color:var(--acc);font-weight:600;font-size:11px;letter-spacing:.02em}
+.rhead{font-size:13px;font-weight:700;margin:12px 0 4px;border-top:1px solid #d0d7de;padding-top:8px}
+.rs{display:flex;align-items:center;gap:8px;padding:3px 6px;border-radius:5px;font-size:13px;margin-bottom:1px}
+.rs.filled{background:#f6f8fa}
+.rs.empty{opacity:.55}
+.rslot{width:42px;flex:none;color:var(--acc);font-weight:700;font-size:12px;letter-spacing:.02em}
 .rs.bn .rslot{color:var(--dim)}
-.rname{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.rrd{color:var(--dim);font-size:11px;font-variant-numeric:tabular-nums}
-.sug{display:flex;align-items:baseline;gap:6px;padding:4px 6px;border-radius:6px;margin-bottom:3px;background:#11161d}
+.rname{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.rrd{color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums}
+.sug{display:flex;align-items:baseline;gap:6px;padding:5px 6px;border-radius:6px;margin-bottom:3px;background:#f6f8fa;font-size:13px;font-weight:600}
 .sug.rec{outline:1px solid var(--acc)}
-.sug .r{color:var(--dim);width:14px}
-.sug .s{margin-left:auto;color:var(--ink);font-variant-numeric:tabular-nums}
-.sug .p{color:var(--dim);font-size:11px}
+.sug .r{color:var(--dim);width:14px;font-weight:400}
+.sug .s{margin-left:auto;color:var(--ink);font-weight:700;font-variant-numeric:tabular-nums}
+.sug .p{color:var(--dim);font-size:12px;font-weight:400}
 .sug .g{color:var(--warn);font-size:10px}
-.rule{font-size:10px;color:var(--acc);text-transform:uppercase}
-.myroster{margin-top:10px;font-size:11px;color:var(--dim)}
-.prov{font-size:10px;color:var(--t6);margin-top:10px;line-height:1.4}
-kbd{background:#11161d;border:1px solid #30363d;border-radius:4px;padding:0 4px;font-size:10px}
+.rule{font-size:11px;font-weight:700;color:var(--acc);text-transform:uppercase}
+.myroster{margin-top:10px;font-size:12px;color:var(--dim)}
+.prov{font-size:11px;color:var(--mute);margin-top:10px;line-height:1.5}
+kbd{background:#f6f8fa;border:1px solid #d0d7de;border-radius:4px;padding:0 4px;font-size:11px;font-weight:600;color:var(--dim)}
 </style></head><body>
 <div id=driftbanner>⚠ ENGINE DRIFT — do not trust suggestions. The JS engine disagrees with the Python golden trace.</div>
 <header>
@@ -403,7 +423,7 @@ kbd{background:#11161d;border:1px solid #30363d;border-radius:4px;padding:0 4px;
 </div>
 <script>
 const BAKE=/*__BAKE__*/;
-const {META,POOL,ORDER,REMOVALS,GOLDEN}=BAKE;
+const {META,POOL,ORDER,REMOVALS,GOLDEN,INITIAL}=BAKE;
 const D=META.deployed, W=D.pstart_weights, ST=D.starters, POS=D.positions;
 const CAPS=D.caps, QBR=D.qb_by_round, QNB=D.qb_not_before, DEFK=D.defk_round;
 const CW=D.cand_window, RN=D.rounds, TEAMSN=D.teams;
@@ -528,8 +548,14 @@ function selfTest(){
 // rebuilt console can never load stale, structurally-incompatible state.
 const SKEY='dc:'+META.git_sha;
 let mySlot=0,marks={},order=[];
-(function(){try{const s=JSON.parse(localStorage.getItem(SKEY)||'null');
-  if(s){mySlot=s.slot||0;marks=s.marks||{};order=Array.isArray(s.order)?s.order:[];}}catch(e){}})();
+(function(){
+  if(INITIAL&&INITIAL.taken&&INITIAL.taken.length){
+    mySlot=INITIAL.slot||0;order=INITIAL.taken.slice();
+    const mine=new Set(INITIAL.mine||[]);
+    for(const id of order)marks[id]=mine.has(id)?'mine':'gone';
+  }else{try{const s=JSON.parse(localStorage.getItem(SKEY)||'null');
+    if(s){mySlot=s.slot||0;marks=s.marks||{};order=Array.isArray(s.order)?s.order:[];}}catch(e){}}
+})();
 const byId={}; for(const pos of ORDER)for(const p of POOL[pos])byId[p.id]=p;
 function persist(){localStorage.setItem(SKEY,JSON.stringify({slot:mySlot,marks,order}));}
 
@@ -546,6 +572,36 @@ function state(){
 // breakout-note reveals (view state only -- never persisted, never in the engine)
 const openNotes=new Set();
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+// Board layout: stacked GROUPS (vertical), not one horizontal strip of all 6.
+// Core (RB/WR/QB) sits side-by-side on top; TE then DEF/K stack below the fold.
+// ORDER is untouched (data/engine order); this only controls rendering.
+const LAYOUT=[
+  {label:'Core — RB / WR / QB', cols:['RB','WR','QB']},
+  {label:'Late rounds — scroll for these', cols:['TE','DEF','K'], low:true},
+];
+function columnHTML(pos){
+  let h='<div class="col"><h2>'+pos+' <span class=cnt>('+ST[pos]+' start)</span></h2><div class=list>';
+  let rk=0;const dep=META.display_depth[pos]||30;let availShown=0;
+  for(const p of POOL[pos]){
+    const status=marks[p.id];const isAvail=!status;   // undefined | 'gone' | 'mine'
+    if(isAvail){if(availShown>=dep)break;availShown++;rk++;}  // taken rows still render (toggleable)
+    const adp=p.adp==null?'—':p.adp;
+    const cls='row t'+p.t+(status==='mine'?' mine':status==='gone'?' d':'');
+    const badge=p.bo?'<span class="bo bo-'+p.bo.c+'" title="'+p.bo.c+'" onclick="togNote(event,\''+p.id+'\')">'+p.bo.b+'</span>':'';
+    h+='<div class="'+cls+'" data-n="'+p.n.toLowerCase()+'" onclick="toggleGone(\''+p.id+'\')" title="click = cross off (toggle)">'+
+       '<span class=rk>'+(isAvail?rk:'·')+'</span>'+
+       badge+
+       '<span class=nm>'+p.n+'</span>'+
+       '<span class="num">'+Math.round(p.proj)+'</span>'+
+       '<span class="num adp">'+adp+'</span>'+
+       '<button class=mp title="MY pick (adds to your roster)" onclick="draftMine(\''+p.id+'\');event.stopPropagation()">＋</button>'+
+       '</div>';
+    if(p.bo&&openNotes.has(p.id))
+      h+='<div class=note>'+esc(p.bo.th)+'<span class=kill><b>kills it:</b> '+esc(p.bo.k)+'</span></div>';
+  }
+  return h+'</div></div>';
+}
 function togNote(ev,id){ev.stopPropagation();openNotes.has(id)?openNotes.delete(id):openNotes.add(id);render();}
 function toggleGone(id){
   if(marks[id]){delete marks[id];const i=order.indexOf(id);if(i>=0)order.splice(i,1);}
@@ -565,31 +621,15 @@ function renderSetup(){
 
 function render(){
   const {taken,c,made}=state();
-  // board
+  // board (stacked groups: RB/WR/QB on top, TE/DEF/K below)
   const cols=document.getElementById('cols');cols.innerHTML='';
-  for(const pos of ORDER){
-    const col=document.createElement('div');col.className='col';
-    let h='<h2>'+pos+' <span class=cnt>('+ST[pos]+' start)</span></h2><div class=list>';
-    let rk=0;const dep=META.display_depth[pos]||30;let availShown=0;
-    for(const p of POOL[pos]){
-      const status=marks[p.id];const isAvail=!status;   // undefined | 'gone' | 'mine'
-      if(isAvail){if(availShown>=dep)break;availShown++;rk++;}  // taken rows still render (toggleable)
-      const adp=p.adp==null?'—':p.adp;
-      const cls='row t'+p.t+(status==='mine'?' mine':status==='gone'?' d':'');
-      const badge=p.bo?'<span class="bo bo-'+p.bo.c+'" title="'+p.bo.c+'" onclick="togNote(event,\''+p.id+'\')">'+p.bo.b+'</span>':'';
-      h+='<div class="'+cls+'" data-n="'+p.n.toLowerCase()+'" onclick="toggleGone(\''+p.id+'\')" title="click = cross off (toggle)">'+
-         '<span class=rk>'+(isAvail?rk:'·')+'</span>'+
-         badge+
-         '<span class=nm>'+p.n+'</span>'+
-         '<span class="num">'+Math.round(p.proj)+'</span>'+
-         '<span class="num adp">'+adp+'</span>'+
-         '<button class=mp title="MY pick (adds to your roster)" onclick="draftMine(\''+p.id+'\');event.stopPropagation()">＋</button>'+
-         '</div>';
-      if(p.bo&&openNotes.has(p.id))
-        h+='<div class=note>'+esc(p.bo.th)+'<span class=kill><b>kills it:</b> '+esc(p.bo.k)+'</span></div>';
-    }
-    col.innerHTML=h+'</div>';cols.appendChild(col);
+  let board='';
+  for(const g of LAYOUT){
+    board+='<div class="rg'+(g.low?' low':'')+'">'+g.label+'</div><div class="rowgroup">';
+    for(const pos of g.cols) board+=columnHTML(pos);
+    board+='</div>';
   }
+  cols.innerHTML=board;
   document.getElementById('cnt').textContent=taken.size+' off · '+made+' mine';
   // panel
   renderPanel(taken,c,made);
@@ -730,8 +770,18 @@ renderSetup();selfTest();render();
 
 
 def main():
-    page, summary = build_page()
-    out = REPO_ROOT / "reports" / "draft-console.html"
+    import argparse
+
+    ap = argparse.ArgumentParser(description="build the live draft console")
+    ap.add_argument("--profile", default="najee", help="najee (2-QB) or lmu (1-QB)")
+    ap.add_argument("--marks", default=None, help="JSON snapshot {slot,taken:[names],mine:[names]}")
+    args = ap.parse_args()
+    marks_spec = json.loads(Path(args.marks).read_text()) if args.marks else None
+    page, summary = build_page(args.profile, marks_spec=marks_spec)
+    out_name = (
+        "draft-console-lmu.html" if args.profile == "lmu" else "draft-console.html"
+    )
+    out = REPO_ROOT / "reports" / out_name
     out.write_text(page)
     print(f"wrote {out}")
     print(

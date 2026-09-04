@@ -9,7 +9,7 @@ import psycopg2.extras
 
 from ffi.db import connect
 from ffi.scoring.bonus_pricing import estimate_weekly_cv
-from ffi.scoring.config import ensure_config_in_db, load_config_v1
+from ffi.scoring.config import ensure_config_in_db, load_config_by_version
 from ffi.scoring.def_projection import def_projection_points, fit_def_uplift
 from ffi.scoring.engine import score_components
 from ffi.scoring.fd_impute import fit_fd_rates, impute_fd
@@ -29,9 +29,15 @@ ap = argparse.ArgumentParser()
 ap.add_argument(
     "--snapshot-id", type=int, default=None, help="default: latest week-NULL snapshot"
 )
+ap.add_argument(
+    "--config-version",
+    type=int,
+    default=1,
+    help="scoring config version (1=NAJEE with first-down scoring, 2=LMU without)",
+)
 args = ap.parse_args()
 
-cfg = load_config_v1()
+cfg = load_config_by_version(args.config_version)
 conn = connect()
 ensure_config_in_db(conn, cfg)
 with conn.cursor() as cur:

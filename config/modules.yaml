@@ -1,0 +1,15 @@
+# Per-module enable flags (ADR D8 rollback unit).
+# Read ONLY by src/ffi/flags.py. Flip a module's `enabled: false` to roll it
+# back in seconds; its report section renders `OFF (disabled <date>)`, never
+# vanishes (a disabled module is as visible as a broken one).
+as_of: 2026-09-02
+
+modules:
+  usage_trends:
+    enabled: true
+  waiver_advisor:
+    enabled: true
+  trade_angles:
+    enabled: true
+  push:
+    enabled: true

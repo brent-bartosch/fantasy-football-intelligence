@@ -16,10 +16,25 @@ from ffi.breakout import attach, load_notes
 from ffi.db import connect
 from ffi.sim.pool import build_pool
 
-# WR extended to 70 (2026-08-17): full-PPR WR is deep and flat, so the useful
-# names run later than 60 -- and a breakout note on a WR below the cutoff would
-# fail the build rather than silently vanish (Tre Harris sits at WR66).
-DEPTH = {"QB": 30, "RB": 55, "WR": 70, "TE": 26, "DEF": 16, "K": 15}
+# Depth resized 2026-08-29 (draft day) from OUR league's only clean 12-team /
+# 228-pick draft (2025; earlier seasons in draft_picks mix two 14-16 team
+# leagues and are not comparable). Positions actually drafted in 2025:
+#   RB 69 · WR 72 · QB 46 · TE 20 · DEF 12 · K 9
+# Depth = that demand plus buffer, truncated where the projection curve dies:
+#   RB  proj 88.9 @69 -> 50.1 @85 -> 20.6 @100   (meaningful through ~85)
+#   WR  proj 126  @72 -> 74.3 @110               (full-PPR WR stays flat+deep)
+#   QB  proj 258  @30 -> 163 @32 -> 56 @36       (hard cliff at 32: past it the
+#       names are backups with ~0 expected starts, so 2025's 46 drafted QBs are
+#       lottery tickets our board cannot price -- shown, but not projectable)
+DEPTH = {"QB": 36, "RB": 85, "WR": 110, "TE": 36, "DEF": 20, "K": 20}
+
+# "All viable" flat list: union of (a) anyone the market prices as draftable
+# (real Sleeper adp_2qb, i.e. not the 999 sentinel) and (b) anyone our board
+# projects at or above the proj of the last player drafted at that position in
+# 2025. Neither source alone is enough -- (a) misses players the market has not
+# priced yet, (b) misses players the market drafts on role speculation that our
+# projection zeroes. Union is ~421 names for a 240-pick draft plus waiver churn.
+DEMAND_2025 = {"RB": 69, "WR": 72, "QB": 46, "TE": 20, "DEF": 12, "K": 9}
 ORDER = ["RB", "WR", "QB", "TE", "DEF", "K"]  # draft-priority order, left->right
 
 PLAYBOOK = (
@@ -27,6 +42,82 @@ PLAYBOOK = (
     "QB deep — get 2 startable, don't overpay; QB3 R10+. · TE: 1 starter + 1 backup. · "
     "K/DEF last two rounds. · Depth priority in-season: RB & WR."
 )
+
+
+def viable_floors(pool):
+    """proj_points of the last player drafted at each position in 2025 -- the
+    empirical "still worth a roster spot" line. Fails loud if a position is
+    missing from the pool rather than silently omitting it from the flat list."""
+    floors = {}
+    for pos, dem in DEMAND_2025.items():
+        ps = sorted(
+            (p for p in pool if p.position == pos), key=lambda p: -p.proj_points
+        )
+        if not ps:
+            raise ValueError(
+                f"no {pos} in pool -- cannot compute viability floor; "
+                f"upstream valuation/pool invariant broken"
+            )
+        floors[pos] = float(ps[min(dem, len(ps)) - 1].proj_points)
+    return floors
+
+
+def build_viable(pool, notes_by_ref=None):
+    """Flat cross-position list of every viable player, ranked by VORP.
+
+    VORP is already replacement-normalized per position, so it is the only
+    number in the pool that is meaningfully comparable across QB/RB/WR/TE --
+    proj_points is not (a 250-point QB and a 250-point RB are worlds apart).
+    This is the list to read in rounds 12+ when the position columns run dry.
+    """
+    notes_by_ref = notes_by_ref or {}
+    floors = viable_floors(pool)
+    # The flat list must be a strict SUPERSET of the position columns: a player
+    # good enough to display in a column but absent from "all viable" makes the
+    # list a liar. The columns run deeper than the 2025 floor at RB/WR/TE (they
+    # rank by proj, not by the drafted line), so fold them in explicitly.
+    shown = set()
+    for pos, depth in DEPTH.items():
+        ranked = sorted(
+            (q for q in pool if q.position == pos), key=lambda q: -q.proj_points
+        )
+        shown.update(q.ref for q in ranked[:depth])
+    rows = []
+    for p in pool:
+        floor = floors.get(p.position)
+        if floor is None:
+            continue
+        priced = p.adp is not None
+        if not priced and float(p.proj_points) < floor and p.ref not in shown:
+            continue
+        row = {
+            "id": p.ref,
+            "n": p.name,
+            "pos": p.position,
+            "proj": round(p.proj_points),
+            "vorp": round(p.vorp),
+            "t": p.tier,
+            "adp": round(p.adp) if p.adp is not None else None,
+            # market prices him but our projection is below the 2025 drafted
+            # line -- i.e. the market is buying a role our board does not see
+            "spec": bool(priced and float(p.proj_points) < floor),
+        }
+        note = notes_by_ref.get(p.ref)
+        if note is not None:
+            row["bo"] = {
+                "c": note.category,
+                "b": note.badge,
+                "th": note.thesis,
+                "k": note.kill,
+            }
+        rows.append(row)
+    # K/DEF VORP is on a compressed scale (max ~11/~19 vs RB's ~288) because
+    # every team starts exactly one and the spread between them is tiny. Sorted
+    # naively they land mid-list, ABOVE genuinely useful deep RB/WR whose VORP
+    # is very negative -- which inverts the playbook (K/DEF go in the last two
+    # rounds, always). Keep them on the list, pinned below every skill player.
+    rows.sort(key=lambda r: (r["pos"] in ("K", "DEF"), -r["vorp"]))
+    return rows
 
 
 def build(pool, notes_by_ref=None):
@@ -100,6 +191,11 @@ font-weight:700;text-align:center;color:#0b0f14;cursor:pointer}}
 .note b{{color:#8b98a5;font-weight:600}}
 .note .kill{{color:#d29922;display:block;margin-top:3px}}
 button.on{{background:#243b53;border-color:#58a6ff}}
+/* flat "all viable" view: one wide ranked column, VORP-sorted */
+.col.wide{{min-width:100%}}
+.pos{{flex:none;width:26px;font-size:10px;font-weight:700;color:var(--dim)}}
+.vorp{{width:42px;text-align:right}}
+.spec{{color:#d29922}}   /* market prices him, our projection does not */
 .legend{{color:var(--dim);font-size:10px;margin-top:4px}}
 .legend span{{margin-right:8px}}
 .legend i{{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:3px}}
@@ -111,6 +207,7 @@ button.on{{background:#243b53;border-color:#58a6ff}}
 <input id=q placeholder="type a drafted player → Enter to cross off (fuzzy)">
 <button onclick=reset()>Reset</button>
 <button id=bof onclick=togBo()>★ breakouts</button>
+<button id=allf onclick=togAll()>▤ all viable</button>
 <span class=cnt id=cnt></span>
 </div>
 <div class=legend>
@@ -122,10 +219,11 @@ button.on{{background:#243b53;border-color:#58a6ff}}
 </div></header>
 <div class=cols id=cols></div>
 <script>
-const DATA={data}, ORDER={order};
+const DATA={data}, ORDER={order}, VIABLE={viable};
 const drafted=new Set(JSON.parse(localStorage.getItem('drafted_{date}')||'[]'));
 const openNotes=new Set();      // which theses are expanded (view state, not persisted)
 let boOnly=false;               // ★ breakouts filter
+let allMode=false;              // ▤ flat all-viable view (VORP-ranked)
 function save(){{localStorage.setItem('drafted_{date}',JSON.stringify([...drafted]));upd();}}
 function reset(){{drafted.clear();save();render();}}
 function upd(){{document.getElementById('cnt').textContent=drafted.size+' off the board';}}
@@ -140,7 +238,42 @@ function togBo(){{
  document.getElementById('bof').classList.toggle('on',boOnly);
  render();
 }}
+function togAll(){{
+ allMode=!allMode;
+ document.getElementById('allf').classList.toggle('on',allMode);
+ render();
+}}
+// Flat view shares the SAME drafted set as the columns, so crossing a player
+// off in either view removes him from both -- there is only one board.
+function renderAll(){{
+ const c=document.getElementById('cols');c.innerHTML='';
+ const col=document.createElement('div');col.className='col wide';
+ let h='<h2>ALL VIABLE — '+VIABLE.length+' names, ranked by VORP (cross-position)</h2><div class=list>';
+ let rk=0;
+ for(const p of VIABLE){{
+  if(!drafted.has(p.id))rk++;
+  if(boOnly&&!p.bo)continue;
+  const d=drafted.has(p.id)?' d':'';
+  const adp=p.adp==null?'—':p.adp;
+  const badge=p.bo?'<span class="bo bo-'+p.bo.c+'" title="'+esc(p.bo.c)+
+    '" onclick="togNote(event,\''+p.id+'\')">'+p.bo.b+'</span>':'';
+  h+='<div class="row t'+p.t+d+'" data-n="'+p.n.toLowerCase()+'" onclick="toggle(\''+p.id+'\')">'+
+     '<span class=rk>'+(drafted.has(p.id)?'·':rk)+'</span>'+
+     '<span class=pos>'+p.pos+'</span>'+
+     badge+
+     '<span class="nm'+(p.spec?' spec':'')+'">'+p.n+'</span>'+
+     '<span class="num">'+p.proj+'</span>'+
+     '<span class="num vorp">'+p.vorp+'</span>'+
+     '<span class="num adp">'+adp+'</span></div>';
+  if(p.bo&&openNotes.has(p.id))
+    h+='<div class=note>'+esc(p.bo.th)+
+       '<span class=kill><b>kills it:</b> '+esc(p.bo.k)+'</span></div>';
+ }}
+ col.innerHTML=h+'</div>';c.appendChild(col);
+ upd();
+}}
 function render(){{
+ if(allMode)return renderAll();
  const c=document.getElementById('cols');c.innerHTML='';
  for(const pos of ORDER){{
   const col=document.createElement('div');col.className='col';
@@ -177,7 +310,8 @@ q.addEventListener('input',()=>{{
 q.addEventListener('keydown',e=>{{
  if(e.key!=='Enter')return;
  const v=q.value.trim().toLowerCase();if(!v)return;
- for(const pos of ORDER)for(const p of DATA[pos])
+ const hunt=allMode?[VIABLE]:ORDER.map(pos=>DATA[pos]);
+ for(const list of hunt)for(const p of list)
    if(!drafted.has(p.id)&&p.n.toLowerCase().includes(v)){{drafted.add(p.id);save();render();q.value='';return;}}
 }});
 </script></body></html>"""
@@ -195,6 +329,7 @@ def main():
         play=html.escape(PLAYBOOK),
         data=json.dumps(build(pool, notes)),
         order=json.dumps(ORDER),
+        viable=json.dumps(build_viable(pool, notes)),
     )
     path = "reports/cheat-sheet.html"
     with open(path, "w") as f:

@@ -9,6 +9,7 @@ from ffi.health import (
     UnknownSourceError,
     is_alarming,
     load_clock,
+    render_or_refuse,
     state,
 )
 
@@ -129,3 +130,22 @@ def test_missing_contract_field_fails_loud(tmp_path):
     )
     with pytest.raises(ValueError, match="lag_window_h"):
         load_clock(bad)
+
+
+def test_render_or_refuse_refuses_on_any_broken_input():
+    out = render_or_refuse(
+        {"nflverse": SourceState.OK, "sleeper": SourceState.BROKEN},
+        lambda: "COMPUTED",
+    )
+    assert out == "NO SIGNAL — sleeper BROKEN"
+
+
+def test_render_or_refuse_renders_when_all_ok():
+    out = render_or_refuse({"sleeper": SourceState.OK}, lambda: "COMPUTED")
+    assert out == "COMPUTED"
+
+
+def test_render_or_refuse_renders_on_known_lagging():
+    # Structural lag is NOT alarming (R12) — a KNOWN-LAGGING input still renders.
+    out = render_or_refuse({"sleeper": SourceState.KNOWN_LAGGING}, lambda: "X")
+    assert out == "X"

@@ -13,16 +13,20 @@ FLEX_SLOTS = 1
 DEFAULT_FLEX_SHARE = {"RB": 0.5, "WR": 0.4, "TE": 0.1}
 
 
-def compute_replacement_ranks(scenario: dict) -> dict[str, int]:
+def compute_replacement_ranks(
+    scenario: dict, starters: dict | None = None, flex_slots: int | None = None
+) -> dict[str, int]:
     teams = scenario["teams"]
+    starters = starters or STARTERS
+    flex_slots = FLEX_SLOTS if flex_slots is None else flex_slots
     flex_share = scenario.get("flex_share", DEFAULT_FLEX_SHARE)
     if abs(sum(flex_share.values()) - 1.0) > 1e-9:
         raise ValueError(f"flex_share must sum to 1: {flex_share}")
     ranks = {}
-    for pos, n in STARTERS.items():
+    for pos, n in starters.items():
         demand = teams * n
         if pos in flex_share:
-            demand += round(teams * FLEX_SLOTS * flex_share[pos])
+            demand += round(teams * flex_slots * flex_share[pos])
         if pos == "QB":
             demand += scenario.get("qb_extra_rostered", 0)
         ranks[pos] = int(demand)

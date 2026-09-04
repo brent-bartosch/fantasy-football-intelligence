@@ -42,7 +42,9 @@ def db():
         cur.execute(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE")
         cur.execute(
             "TRUNCATE public.player_id_xwalk, public.matchup_results, "
-            "public.manager_slot_annotations, public.leagues, public.usage_weekly "
+            "public.manager_slot_annotations, public.leagues, public.usage_weekly, "
+            "public.league_transactions, public.league_rosters, "
+            "public.market_trends, public.push_log, public.waiver_move_events "
             "RESTART IDENTITY CASCADE"
         )
         cur.execute("TRUNCATE players CASCADE")

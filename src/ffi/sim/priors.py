@@ -223,3 +223,19 @@ def build_slot_priors(conn) -> SlotPriors:
         "n_picks_used": len(good_rows),
     }
     return SlotPriors(latest_season=latest_season, pos_share=pos_share, params=params)
+
+
+def flat_slot_priors(teams: int, rounds: int, latest_season: int = 2026) -> SlotPriors:
+    """Uniform opponent prior for leagues with no mined draft history (e.g. a
+    second league). `pos_share[(slot, round)]` is flat over positions; used only
+    where a real `build_slot_priors` history doesn't exist."""
+    pos_share = {
+        (slot, rnd): {pos: 1.0 / len(POSITIONS) for pos in POSITIONS}
+        for slot in range(1, teams + 1)
+        for rnd in range(1, rounds + 1)
+    }
+    return SlotPriors(
+        latest_season=latest_season,
+        pos_share=pos_share,
+        params={"flat": True, "teams": teams, "rounds": rounds},
+    )

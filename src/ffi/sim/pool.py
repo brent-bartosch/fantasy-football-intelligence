@@ -50,8 +50,8 @@ adp AS (
     SELECT
         rec ->> 'player_id' AS player_id,
         CASE
-            WHEN (rec -> 'stats' ->> 'adp_2qb')::float < 999
-                THEN (rec -> 'stats' ->> 'adp_2qb')::float
+            WHEN (rec -> 'stats' ->> '{adp_field}')::float < 999
+                THEN (rec -> 'stats' ->> '{adp_field}')::float
         END AS adp
     FROM latest_snapshot, jsonb_array_elements(payload) AS rec
 )
@@ -125,11 +125,29 @@ def _adp_pin(conn) -> int | None:
     return sid
 
 
-def build_pool(conn, scenario: str) -> list[PoolPlayer]:
-    config_version = load_config_v1().version
-    pin = _adp_pin(conn)
+def build_pool(
+    conn,
+    scenario: str,
+    *,
+    config_version: int | None = None,
+    adp_field: str = "adp_2qb",
+    qb_sanity_min: int = _MIN_QB_IN_TOP_N,
+) -> list[PoolPlayer]:
+    """Build the draftable pool for a scenario. `config_version`/`adp_field`/
+    `qb_sanity_min` parameterize for a second league: LMU uses config v2,
+    `adp_std` (1-QB ADP), and a lower QB sanity floor (QBs aren't hoarded)."""
+    config_version = (
+        config_version if config_version is not None else load_config_v1().version
+    )
+    # The ADP pin is a 2-QB-specific fix (adp_2qb sample flapping since 8/14).
+    # For a 1-QB league reading `adp_std`, the pin is irrelevant — serve the
+    # latest snapshot's standard ADP instead.
+    pin = _adp_pin(conn) if adp_field == "adp_2qb" else None
     with conn.cursor() as cur:
-        cur.execute(_POOL_QUERY, (pin, pin, config_version, scenario))
+        cur.execute(
+            _POOL_QUERY.format(adp_field=adp_field),
+            (pin, pin, config_version, scenario),
+        )
         rows = cur.fetchall()
 
     players = []
@@ -186,10 +204,10 @@ def build_pool(conn, scenario: str) -> list[PoolPlayer]:
     real_adp_sorted = sorted(real_adp_players, key=lambda p: p.adp)
     top_n = real_adp_sorted[:_TOP_N_FOR_QB_SANITY]
     qb_in_top_n = sum(1 for p in top_n if p.position == "QB")
-    if qb_in_top_n < _MIN_QB_IN_TOP_N:
+    if qb_in_top_n < qb_sanity_min:
         raise ValueError(
             f"only {qb_in_top_n} QBs in ADP top {_TOP_N_FOR_QB_SANITY} "
-            f"(need >= {_MIN_QB_IN_TOP_N}, 2QB sanity gate, scenario={scenario})"
+            f"(need >= {qb_sanity_min}, QB sanity gate, scenario={scenario})"
         )
 
     def_count = sum(1 for p in players if p.position == "DEF")

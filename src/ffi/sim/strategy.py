@@ -106,6 +106,10 @@ class StrategyParams:
     qb_by_round: tuple = (2, 5, 9)  # QB #n on roster by END of round qb_by_round[n-1]
     defk_round: int = 14  # DEF forced at this round if unheld; K at defk_round+1
     caps: tuple = (("QB", 4), ("RB", 9), ("WR", 9), ("TE", 3), ("K", 1), ("DEF", 1))
+    # Roster starter shape as a hashable tuple, used for feasibility/required-picks
+    # (feasibility is league-shape-aware: 2-QB NAJEE vs 1-QB LMU). Default matches
+    # ffi.sim.opponent.STARTERS.
+    starters: tuple = (("QB", 2), ("RB", 2), ("WR", 3), ("TE", 1), ("K", 1), ("DEF", 1))
     tier_break_bonus: float = 0.0  # score bump for closing out a tier
     qb_not_before: tuple = (1, 1, 1)  # QB #n not draftable (rule 4) before this round
     qb_tier_targets: tuple = ()  # QB #n (rule 4 only) capped at tier <= this[n]
@@ -152,6 +156,26 @@ DEPLOYED_PARAMS = StrategyParams(
 )
 
 
+def make_lmu_strategy() -> StrategyParams:
+    """LMU (14-team, 1-QB) deployed strategy. Unlike the 2-QB NAJEE engine,
+    QBs are devalued (first QB ~overall rank 36), so there is NO early-QB force:
+    a single QB deadline at R12 as a safety net, a permissive 2nd-QB allowance,
+    TE capped at 2, K/DEF at 1, and the 1-QB P(starts) weights. Loaded lazily
+    because the LMU starts table (`data/p_starts_lmu.json`) is a separate tracked
+    artifact that may not exist in every checkout."""
+    from ffi.valuation.starts import CANONICAL_TABLE_PATH
+
+    table = load_starts_table(CANONICAL_TABLE_PATH.parent / "p_starts_lmu.json")
+    return StrategyParams(
+        scenario="lmu_1qb_14",
+        qb_by_round=(12, 18),
+        qb_not_before=(1, 1),
+        caps=(("QB", 2), ("RB", 9), ("WR", 9), ("TE", 2), ("K", 1), ("DEF", 1)),
+        starters=(("QB", 1), ("RB", 2), ("WR", 3), ("TE", 1), ("K", 1), ("DEF", 1)),
+        pstart_weights=pstart_weight_tuples(table),
+    )
+
+
 def _pstart_map(pstart_weights: tuple) -> dict | None:
     """`pstart_weights` tuple -> {pos: (w1, w2, ...)}, or None when empty
     (legacy vorp scoring)."""
@@ -166,15 +190,16 @@ def _pstart_weight(weights_map: dict, pos: str, slot: int) -> float:
     return row[slot - 1] if 1 <= slot <= len(row) else 0.0
 
 
-def _unmet_positions(counts: dict) -> list[str]:
+def _unmet_positions(counts: dict, starters: dict | None = None) -> list[str]:
     """Positions where drafting one more would reduce `required_picks(counts)`
     -- an open starter slot, or a FLEX-eligible position while FLEX is open."""
-    base = required_picks(counts)
+    starters = starters or STARTERS
+    base = required_picks(counts, starters)
     unmet = []
-    for pos in STARTERS:
+    for pos in starters:
         c2 = dict(counts)
         c2[pos] = c2.get(pos, 0) + 1
-        if required_picks(c2) < base:
+        if required_picks(c2, starters) < base:
             unmet.append(pos)
     return unmet
 
@@ -240,6 +265,7 @@ def rule4_candidates(
     informational board view even on turns where a force rule (1-3) decides
     the actual pick."""
     caps = dict(params.caps)
+    starters = dict(params.starters)
     qb_n = counts.get("QB", 0)
     weights_map = _pstart_map(params.pstart_weights)  # None => legacy vorp mode
     scored = []
@@ -259,7 +285,7 @@ def rule4_candidates(
             continue
         if counts.get(pos, 0) >= caps.get(pos, float("inf")):
             continue
-        if not feasible(counts, pos, picks_left_after):
+        if not feasible(counts, pos, picks_left_after, starters):
             continue
         cands = avail_by_pos.get(pos) or []
         if not cands:
@@ -305,14 +331,15 @@ def evaluate_rules(
     assistant's #1 answer is always, by construction, this function's
     result, never a second implementation."""
     caps = dict(params.caps)
+    starters = dict(params.starters)
     weights_map = _pstart_map(params.pstart_weights)  # None => legacy vorp mode
 
     # 1. Feasibility force. In A' mode the unmet-slot candidates are scored by
     # the same P_start[pos][k+1] x vorp rule as rule 4 (slot-1/2 weights are
     # always > 0, so no candidate is dropped here).
-    if required_picks(counts) == picks_left_after:
+    if required_picks(counts, starters) == picks_left_after:
         scored = []
-        for pos in _unmet_positions(counts):
+        for pos in _unmet_positions(counts, starters):
             cands = avail_by_pos.get(pos) or []
             if not cands:
                 continue
@@ -338,7 +365,7 @@ def evaluate_rules(
             if (
                 cands
                 and qb_n < caps.get("QB", float("inf"))
-                and feasible(counts, "QB", picks_left_after)
+                and feasible(counts, "QB", picks_left_after, starters)
             ):
                 return (
                     _pick_best([(c.vorp, c) for c in cands[:CAND_WINDOW]]),
@@ -353,7 +380,7 @@ def evaluate_rules(
         and counts.get("DEF", 0) < caps.get("DEF", float("inf"))
     ):
         cands = avail_by_pos.get("DEF") or []
-        if cands and feasible(counts, "DEF", picks_left_after):
+        if cands and feasible(counts, "DEF", picks_left_after, starters):
             return _pick_best([(c.vorp, c) for c in cands[:CAND_WINDOW]]), "defk"
     if (
         round_ >= params.defk_round + 1
@@ -361,7 +388,7 @@ def evaluate_rules(
         and counts.get("K", 0) < caps.get("K", float("inf"))
     ):
         cands = avail_by_pos.get("K") or []
-        if cands and feasible(counts, "K", picks_left_after):
+        if cands and feasible(counts, "K", picks_left_after, starters):
             return _pick_best([(c.vorp, c) for c in cands[:CAND_WINDOW]]), "defk"
 
     # 4. Otherwise: feasible, under-cap, in-window candidates, argmax score.
