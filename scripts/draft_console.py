@@ -621,7 +621,8 @@ function renderSetup(){
 
 function render(){
   const {taken,c,made}=state();
-  // board (stacked groups: RB/WR/QB on top, TE/DEF/K below)
+  // preserve each segment's scroll position across the rebuild (innerHTML reset)
+  const sc=[...document.querySelectorAll('.list')].map(l=>l.scrollTop);
   const cols=document.getElementById('cols');cols.innerHTML='';
   let board='';
   for(const g of LAYOUT){
@@ -630,8 +631,8 @@ function render(){
     board+='</div>';
   }
   cols.innerHTML=board;
+  [...document.querySelectorAll('.list')].forEach((l,i)=>{if(sc[i]!=null)l.scrollTop=sc[i];});
   document.getElementById('cnt').textContent=taken.size+' off · '+made+' mine';
-  // panel
   renderPanel(taken,c,made);
 }
 
