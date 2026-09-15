@@ -117,10 +117,3 @@ def test_main_returns_0_when_no_unsafe_field_is_consumed(tmp_path, capsys):
     (code / "fine.py").write_text('x = clock["teams"]\n')
     assert v.main([], config=config, roots=[code]) == 0
     assert "OK:" in capsys.readouterr().out
-
-
-def test_the_real_config_still_has_unset_fields():
-    """If this fails, P3 has been done — delete this test and update the
-    plan's completion notes with the observed values."""
-    doc = v.load_doc(pathlib.Path("config/league_clock.yaml"))
-    assert "waiver_processing_hour" in v.unsafe_fields(doc)

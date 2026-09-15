@@ -26,6 +26,7 @@ def test_clock_loads_verified_fields_only():
     assert c.teams == 12
     assert c.waivers_process_day == "tuesday"
     assert c.waiver_period_days == 1
+    assert c.waiver_processing_hour == 1  # fitted from the 2024+2025 tx logs
     assert c.season_first_game_date == datetime.date(2026, 9, 10)
 
 
@@ -36,11 +37,15 @@ def test_week_start_is_thursday_of_that_week():
     assert c.week_start(1).weekday() == 3  # Thursday
 
 
-def test_waiver_deadline_is_the_tuesday_after_the_week():
+def test_waiver_deadline_is_the_observed_wednesday_1am_batch():
+    """Fitted from the NAJEE transaction log: the claim window closes at the
+    end of Tuesday and the batch runs 01:00 PT the next morning (84 adds at
+    Wed 01:00 in 2025, 45 in 2024)."""
     c = _clock()
     d = clock_mod.deadline("waivers", 1, c)
-    assert d.date() == datetime.date(2026, 9, 15)  # Tuesday after week 1
-    assert d.weekday() == 1
+    assert d.date() == datetime.date(2026, 9, 16)  # Wednesday after week 1
+    assert d.weekday() == 2  # Wednesday
+    assert d.hour == 1
     assert d.tzinfo is not None
 
 
@@ -66,8 +71,8 @@ def test_fallback_fire_times_are_derived_from_the_boundary():
     c = _clock()
     claims = clock_mod.fallback_fire_time("claims", 1, c)
     trends = clock_mod.fallback_fire_time("trends", 1, c)
-    assert claims == datetime.datetime(2026, 9, 14, 18, 0, tzinfo=LEAGUE_TZ)  # Monday
-    assert trends == datetime.datetime(2026, 9, 15, 12, 0, tzinfo=LEAGUE_TZ)  # Tuesday
+    assert claims == datetime.datetime(2026, 9, 15, 19, 0, tzinfo=LEAGUE_TZ)  # Tue 7pm
+    assert trends == datetime.datetime(2026, 9, 16, 13, 0, tzinfo=LEAGUE_TZ)  # Wed 1pm
 
 
 def test_clock_rejects_unknown_event_and_job():

@@ -4,9 +4,11 @@ Every scheduled job time is DERIVED from a deadline in this file rather than
 hardcoded, so a cadence/deadline mismatch is a config error instead of a
 structural defeat (R2). `scripts/validate_league_clock.py` enforces the other
 half of the contract: no module may consume an UNSET or UNVERIFIED field. This
-module therefore loads ONLY the fields that are structurally stable and
-verified, and never names the P3 pending mechanics (processing hour, clear
-award mechanism, reset boundary, or the unverified trade/playoff fields).
+module loads the structurally-stable fields plus the observed mechanics that
+have been FITTED FROM DATA (waiver_processing_hour, fitted 2026-09-14 from the
+2024+2025 transaction logs); the still-pending mechanics (clear award
+mechanism, reset boundary) and the unverified trade/playoff fields are never
+named here.
 
 Fail-closed: a deadline that would need an UNSET field is simply not derivable
 here — it is not exposed, so a consumer cannot silently compute on a guessed
@@ -33,12 +35,11 @@ WEEKDAYS = {
     "sunday": 6,
 }
 
-# Hard-fallback fire times, relative to the (hour-UNSET) waiver boundary. These
-# are conservative launchd fallbacks, not the primary trigger: the exact
-# processing hour is a P3 observed value, so the fallback fires early enough
-# (claims) / late enough (trends) to be safe on either side of it.
-CLAIMS_LEAD_HOURS = 6   # Monday 18:00 local = Tuesday 00:00 boundary minus 6h
-TRENDS_LAG_HOURS = 12   # Tuesday 12:00 local = Tuesday 00:00 boundary plus 12h
+# Hard-fallback fire times, relative to the observed waiver batch
+# (Wednesday 01:00 local). These are conservative launchd fallbacks, not the
+# primary trigger.
+CLAIMS_LEAD_HOURS = 6   # Tuesday 19:00 local = batch minus 6h
+TRENDS_LAG_HOURS = 12   # Wednesday 13:00 local = batch plus 12h
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ class LeagueClock:
     waiver_type: str
     waivers_process_day: str  # lowercase weekday name
     waiver_period_days: int
+    waiver_processing_hour: int  # observed batch hour, local (fitted from the tx log)
     weekly_acquisition_limit: int
     season_acquisition_limit: int
     ir_direct_add: bool
@@ -95,6 +97,7 @@ def load(path: pathlib.Path | None = None) -> LeagueClock:
         waiver_type=str(_need("waiver_type")),
         waivers_process_day=day,
         waiver_period_days=int(_need("waiver_period_days")),
+        waiver_processing_hour=int(_need("waiver_processing_hour")),
         weekly_acquisition_limit=int(_need("weekly_acquisition_limit")),
         season_acquisition_limit=int(_need("season_acquisition_limit")),
         ir_direct_add=bool(_need("ir_direct_add")),
@@ -112,9 +115,12 @@ def deadline(
     Events:
       'season_start' — the league's first game day, 00:00 local.
       'week_start'   — the opening day of game week `week`, 00:00 local.
-      'waivers'      — the waiver-processing boundary following week `week`
-                       (the processing DAY at 00:00 local; the exact hour is a
-                       P3 observed value this module refuses to guess).
+      'waivers'      — the observed waiver batch following week `week`: the
+                       morning AFTER the claim day (waivers_process_day), at
+                       waiver_processing_hour local. Fitted from the 2024+2025
+                       transaction logs — the claim window closes at the end of
+                       the claim day and the batch runs at 01:00 the next
+                       morning.
     """
     c = clock or load()
     if event == "season_start":
@@ -126,8 +132,11 @@ def deadline(
         if week < 1:
             raise ValueError(f"week must be >= 1, got {week}")
         start = c.week_start(week)
-        day = start + datetime.timedelta(days=c._weekday_offset(c.waivers_process_day))
-        return datetime.datetime(day.year, day.month, day.day, tzinfo=c.timezone)
+        offset = c._weekday_offset(c.waivers_process_day) + 1  # batch is the next morning
+        day = start + datetime.timedelta(days=offset)
+        return datetime.datetime(
+            day.year, day.month, day.day, c.waiver_processing_hour, tzinfo=c.timezone
+        )
     raise ValueError(
         f"unknown event {event!r} (known: season_start, week_start, waivers)"
     )
@@ -156,8 +165,8 @@ def fallback_fire_time(
 ) -> datetime.datetime:
     """Hard-fallback launchd fire time for a named job.
 
-    'claims' -> Monday 18:00 local (before the Tuesday waiver boundary).
-    'trends' -> Tuesday 12:00 local (after the Tuesday waiver boundary).
+    'claims' -> Tuesday 19:00 local (6h before the Wednesday 01:00 batch).
+    'trends' -> Wednesday 13:00 local (12h after the batch).
     """
     c = clock or load()
     boundary = deadline("waivers", week, c)

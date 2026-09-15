@@ -173,3 +173,14 @@ Concretely:
 - [x] `scripts/probe_yahoo_access.py`
 - [x] `scripts/run_claims_brief.py`
 - [x] `scripts/run_trends_report.py`
+
+## P3 completion note (2026-09-14)
+
+`waiver_processing_hour` was fitted from the NAJEE transaction log
+(league_key 461.l.326814, 2024 + 2025 seasons): the waiver batch runs at
+**01:00 PT the morning after the transcribed claim day** — 84 adds at Wed
+01:00 in 2025, 45 in 2024, batch completing by ~02:00 (the 06:00–07:00
+Wednesday clusters are post-waiver FA grabs, not the batch). Wired into
+`league_state/clock.py`: `deadline("waivers")` is now Wednesday 01:00 PT.
+Still UNSET: `clear_award_mechanism`, `weekend_drop_clear_behavior`,
+`move_count_reset_boundary` (plus the unverified trade/playoff fields).

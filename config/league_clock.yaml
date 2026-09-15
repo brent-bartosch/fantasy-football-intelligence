@@ -15,7 +15,7 @@
 # Consuming either kind of field from src/ or scripts/ fails the validator
 # (exit 1). Fail-closed: window-2 clear-time alerting stays disabled until
 # clear_award_mechanism is observed (ADR Domain 1).
-as_of: 2026-08-31
+as_of: 2026-09-14
 source: league_rules.md (dated 2025) — NOT yet diffed against the live 2026 settings page (R16)
 timezone: America/Los_Angeles
 
@@ -30,11 +30,18 @@ season_acquisition_limit: 65        # "Season Acquisitions: Maximum 65"
 ir_direct_add: false                # "IR Direct Add: No"
 season_first_game_date: 2026-09-10  # Thursday after Labor Day 2026
 
-# --- P3 OBSERVED MECHANICS — must be fitted from the 2025 transaction log ----
+# --- P3 OBSERVED MECHANICS — fitted from the transaction log where noted ----
 # These are NOT settings-page readings. R4: "drop + 1 day" is likely a batch
 # boundary, not arithmetic, and the post-clear award may be priority rather
 # than FCFS — which would collapse window 2 into window 1 entirely.
-waiver_processing_hour: UNSET       # local hour claims actually process (R2)
+#
+# FITTED 2026-09-14 from the NAJEE transaction log (league_key 461.l.326814,
+# 2024 + 2025 seasons): the waiver batch runs at 01:00 PT the morning AFTER
+# the transcribed claim day — 84 adds at Wed 01:00 in 2025, 45 in 2024, batch
+# completing by ~02:00. The 06:00-07:00 Wednesday clusters are post-waiver
+# FA grabs, not the batch. R16 caveat: diff against the live 2026 settings
+# page when Yahoo access returns.
+waiver_processing_hour: 1           # observed: claims process 01:00 PT (R2)
 clear_award_mechanism: UNSET        # fcfs | rolling_priority (R4)
 weekend_drop_clear_behavior: UNSET  # does a Sunday drop clear Monday, or wait for the Tuesday batch?
 move_count_reset_boundary: UNSET    # when the weekly 5-move counter resets (R21)
