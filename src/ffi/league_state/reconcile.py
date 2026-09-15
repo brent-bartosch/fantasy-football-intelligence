@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections.abc import Sequence
 
-from ffi.league_state import Transaction
+from ffi.league_state import RosterRow, Transaction
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,20 @@ class Diff:
 class ReconcileResult:
     matched: int
     diffs: tuple[Diff, ...]
+
+
+@dataclass(frozen=True)
+class RosterDiff:
+    """Per-team ownership diff between a manual capture and an API fetch."""
+
+    team_id: int
+    matched: int
+    manual_only: tuple[str, ...]  # player_ids the capture has that the API lacks
+    api_only: tuple[str, ...]  # player_ids the API has that the capture lacks
+
+    @property
+    def clean(self) -> bool:
+        return not self.manual_only and not self.api_only
 
 
 def _key(t: Transaction) -> tuple:
@@ -88,3 +102,28 @@ def reconcile(
 
     diffs.sort(key=lambda d: (d.outcome, d.key))
     return ReconcileResult(matched=matched, diffs=tuple(diffs))
+
+
+def reconcile_rosters(
+    manual: Sequence[RosterRow], api: Sequence[RosterRow]
+) -> list[RosterDiff]:
+    """Per-team ownership diff between the manual capture and the API backfill.
+
+    Callers normalize ids to ONE namespace first (the crosswalk maps the
+    sleeper/gsis fallback ids to yahoo ids) — this function compares
+    (team_id, player_id) sets and writes nothing, ever.
+    """
+    teams = sorted({r.team_id for r in manual} | {r.team_id for r in api})
+    out: list[RosterDiff] = []
+    for t in teams:
+        m = {r.player_id for r in manual if r.team_id == t}
+        a = {r.player_id for r in api if r.team_id == t}
+        out.append(
+            RosterDiff(
+                team_id=t,
+                matched=len(m & a),
+                manual_only=tuple(sorted(m - a)),
+                api_only=tuple(sorted(a - m)),
+            )
+        )
+    return out

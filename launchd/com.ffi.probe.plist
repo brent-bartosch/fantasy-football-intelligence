@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.ffi.probe</string>
+  <key>WorkingDirectory</key><string>/Users/brentbartosch/Development/fantasy_football</string>
+  <!-- Daily Yahoo access probe: proves BOTH the token grant and the Fantasy
+       Sports product gate (the grant worked for weeks while league calls
+       403'd during the approval wait). Runs at 06:15, ahead of the morning
+       chain (07:00), so the run row exists before the briefing reads. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string><string>-lc</string>
+    <string>uv run python scripts/probe_yahoo_access.py</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>15</integer></dict>
+  <key>StandardOutPath</key><string>logs/launchd-probe.log</string>
+  <key>StandardErrorPath</key><string>logs/launchd-probe.err</string>
+</dict></plist>

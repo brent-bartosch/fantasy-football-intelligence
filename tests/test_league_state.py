@@ -238,6 +238,28 @@ def test_reconcile_does_not_false_mismatch_on_date_precision():
     assert result.diffs == ()
 
 
+def test_reconcile_rosters_reports_per_team_ownership_diffs():
+    day = datetime.date(2026, 9, 14)
+    manual = [
+        RosterRow(326814, 2026, day, 1, "A", "starter", "QB"),
+        RosterRow(326814, 2026, day, 1, "B", "bench", "RB"),
+        RosterRow(326814, 2026, day, 2, "C", "starter", "WR"),
+    ]
+    api = [
+        RosterRow(326814, 2026, day, 1, "A", "starter", "QB"),
+        RosterRow(326814, 2026, day, 1, "D", "bench", "TE"),
+        RosterRow(326814, 2026, day, 2, "C", "starter", "WR"),
+    ]
+    diffs = reconcile.reconcile_rosters(manual, api)
+    by_team = {d.team_id: d for d in diffs}
+    assert by_team[1].matched == 1
+    assert by_team[1].manual_only == ("B",)
+    assert by_team[1].api_only == ("D",)
+    assert not by_team[1].clean
+    assert by_team[2].clean
+    assert by_team[2].matched == 1
+
+
 # --- roster captures -------------------------------------------------------
 # Fixture built from a REAL Yahoo roster-page paste (week 1, 2026) — the
 # golden-fixture pattern: the parser must survive the junk lines, stat

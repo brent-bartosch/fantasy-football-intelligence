@@ -66,10 +66,20 @@ def _to_transaction(rec: dict, league_id: int, season: int, week: int | None) ->
 
 
 def fetch_transactions(
-    session, league_key: str, season: int, week: int | None = None
+    session,
+    league_key: str,
+    season: int,
+    week: int | None = None,
+    league_id: int | None = None,
 ) -> list[Transaction]:
-    """Backfill the canonical transactions for a season (optionally one week)."""
-    league_id = _league_id(league_key)
+    """Backfill the canonical transactions for a season (optionally one week).
+
+    `league_id` overrides the internal league id (the Yahoo league NUMBER
+    changes every season via the renew chain — e.g. NAJEE 2026 is
+    470.l.152123 but the franchise id stays 326814 — so backfills pass the
+    franchise id explicitly to keep rows joinable with the manual captures).
+    """
+    league_id = league_id if league_id is not None else _league_id(league_key)
     lg = get_league(session, league_key)
     raw = yahoo_call(lg.transactions, "add,drop,commish,trade", "")
     return [_to_transaction(r, league_id, season, week) for r in raw]
@@ -84,17 +94,35 @@ def _slot_type(selected_position: str) -> str:
 
 
 def fetch_rosters(
-    session, league_key: str, season: int, as_of: datetime.date
+    session,
+    league_key: str,
+    season: int,
+    as_of: datetime.date,
+    league_id: int | None = None,
+    week: int | None = None,
 ) -> list[RosterRow]:
-    """Backfill canonical roster rows as-of a date from Yahoo."""
-    league_id = _league_id(league_key)
+    """Backfill canonical roster rows from Yahoo.
+
+    `league_id` overrides the internal league id (see fetch_transactions).
+    `week` fetches that week's lineup instead of `as_of`'s day — ownership is
+    identical either way; only the starter/bench split is week-specific.
+
+    Every roster call goes through yahoo_call: yfa's to_team() is lazy, so the
+    roster fetch itself is a separate HTTP request that MUST be throttled
+    (R15 — 12 unthrottled calls is a 999 lockout).
+    """
+    league_id = league_id if league_id is not None else _league_id(league_key)
     lg = get_league(session, league_key)
     teams = yahoo_call(lg.teams)
     out: list[RosterRow] = []
     for team in teams:
         team_key = str(team["team_key"])
         slot = ids.team_slot(team_key)
-        players = yahoo_call(lg.to_team, team_key).roster(day=as_of)
+        tm = yahoo_call(lg.to_team, team_key)
+        if week is not None:
+            players = yahoo_call(tm.roster, week=week)
+        else:
+            players = yahoo_call(tm.roster, day=as_of)
         for p in players:
             sel = str(p.get("selected_position") or "")
             slot_type = _slot_type(sel)

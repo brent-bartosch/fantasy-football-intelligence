@@ -3,20 +3,25 @@
 `yahoo_probe` (ADR Domain 4/6). No retry on a 403 — an authorization state,
 not a transient error (the Yahoo transport already refuses to retry it).
 
-The probe records ONE thing the briefing can read every morning: is the Yahoo
-token grant still alive? A 403 on league DATA (not the token) needs a follow-up
-league call the operator runs manually; the daily job only proves the grant.
-Decision date 2026-09-10: if the probe is still failing by then, the Yahoo
-backfill path stays de-scoped.
+The probe records TWO things the morning can read: (1) is the token grant
+still alive, and (2) is the Fantasy Sports product gate still open? The
+second is the one that mattered: the grant worked for weeks while every
+league call 403'd (approval pending 2026-08-24 → 2026-09-14). One
+league-agnostic call (the user's games list) proves both in a single run.
 """
 from __future__ import annotations
 
 import sys
 
+import requests
+
 from ffi import db
 from ffi import yahoo_client
 
 SOURCE = "yahoo_probe"
+GAMES_URL = (
+    "https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games?format=json"
+)
 
 
 def _finish(conn, run_id: int, status: str, error: str | None = None) -> None:
@@ -39,11 +44,18 @@ def main() -> int:
         run_id = cur.fetchone()[0]
     conn.commit()
     try:
-        # get_session() refreshes the token if stale: a live grant is the first
-        # and cheapest signal that Yahoo access is (still) possible.
-        yahoo_client.get_session()
+        sc = yahoo_client.get_session()
+        resp = requests.get(
+            GAMES_URL,
+            headers={"Authorization": "Bearer " + sc.access_token},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"fantasy API returned HTTP {resp.status_code}: {resp.text[:200]}"
+            )
         _finish(conn, run_id, "success")
-        print("OK: yahoo token grant valid")
+        print("OK: token grant + fantasy API access")
         return 0
     except Exception as exc:  # noqa: BLE001 — recorded, then re-raised as nonzero
         _finish(conn, run_id, "failed", error=str(exc))
