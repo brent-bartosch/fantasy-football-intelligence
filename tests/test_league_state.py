@@ -231,3 +231,154 @@ def test_reconcile_does_not_false_mismatch_on_date_precision():
     )
     assert result.matched == 1
     assert result.diffs == ()
+
+
+# --- roster captures -------------------------------------------------------
+# Fixture built from a REAL Yahoo roster-page paste (week 1, 2026) — the
+# golden-fixture pattern: the parser must survive the junk lines, stat
+# columns, and section headers exactly as the UI emits them.
+ROSTER_CAPTURE = """league_id: 326814
+season: 2026
+as_of: 2026-09-14
+team: 12
+---
+Fantasy
+Trends
+Pos
+Offense
+Bye
+Fan Pts
+Proj Pts
+% Start
+% Ros
+Comp
+QB
+Malik Willis
+Malik WillisVideo ForecastPlayer Note
+Mia - QB
+Final L 13-27 @ LV
+6
+21.18
+28.56
+5%
+40%
+W/R/T
+David Montgomery
+David MontgomeryVideo ForecastPlayer Note
+Hou - RB
+Final L 31-36 vs Buf
+8
+40.50
+20.96
+81%
+97%
+BN
+DK Metcalf
+DK MetcalfVideo ForecastPlayer Note
+Pit - WR
+Final W 20-13 vs Atl
+9
+10.00
+14.29
+38%
+93%
+K
+Evan McPherson
+Evan McPhersonNew Player Note
+Cin - K
+Final W 33-27 vs TB
+6
+19.00
+7.58
+51%
+55%
+DEF
+Eagles
+EaglesNo new player Notes
+Phi - DEF
+Final W 24-22 vs Was
+10
+14.00
+16.52
+91%
+96%
+"""
+
+
+def test_roster_parser_slots_positions_and_resolver_calls():
+    seen = []
+
+    def resolve(name, position, nfl_team):
+        seen.append((name, position, nfl_team))
+        return "id-" + name.split()[-1]
+
+    rows = manual.parse_roster_text(ROSTER_CAPTURE, resolve)
+    assert len(rows) == 5
+    assert (rows[0].player_id, rows[0].slot_type, rows[0].position) == (
+        "id-Willis",
+        "starter",
+        "QB",
+    )
+    assert (rows[1].slot_type, rows[1].position) == ("starter", "RB")  # W/R/T flex
+    assert (rows[2].slot_type, rows[2].position) == ("bench", "WR")
+    assert (rows[3].position, rows[3].slot_type) == ("K", "starter")
+    assert rows[4].position == "DEF"
+    assert all(r.source == "manual" and r.ts_precision == "date" for r in rows)
+    assert all(
+        r.team_id == 12 and r.league_id == 326814 and r.season == 2026 for r in rows
+    )
+    assert rows[0].as_of == datetime.date(2026, 9, 14)
+    assert seen[0] == ("Malik Willis", "QB", "Mia")
+    assert seen[-1] == ("Eagles", "DEF", "Phi")
+
+
+def test_roster_parser_fails_loud_on_any_unresolved_name():
+    """All-or-nothing: one unresolvable name refuses the whole file rather
+    than silently recording a roster with a hole in it."""
+
+    def resolve(name, position, nfl_team):
+        return None
+
+    with pytest.raises(manual.CaptureParseError, match="unresolved"):
+        manual.parse_roster_text(ROSTER_CAPTURE, resolve)
+
+
+def test_roster_parser_requires_separator_and_headers():
+    with pytest.raises(manual.CaptureParseError, match="---"):
+        manual.parse_roster_text("league_id: 326814\nseason: 2026\n", resolve=lambda *a: "x")
+    with pytest.raises(manual.CaptureParseError, match="team"):
+        manual.parse_roster_text(
+            "league_id: 326814\nseason: 2026\n---\nQB\nX\nX note\nMia - QB\n",
+            resolve=lambda *a: "x",
+        )
+
+
+def test_capture_resolver_id_preference_and_name_variants(db):
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO public.player_id_xwalk "
+            "(name, position, team, yahoo_id, sleeper_id, gsis_id) VALUES "
+            "('James Cook', 'RB', 'BUF', '34019', NULL, NULL), "
+            "('Evan McPherson', 'PK', 'CIN', '33537', NULL, NULL), "
+            "('Luther Burden', 'WR', 'CHI', NULL, '12519', NULL), "
+            "('D.J. Moore', 'WR', 'BUF', '30994', NULL, NULL), "
+            "('Kenneth Walker III', 'RB', 'KCC', '33996', NULL, NULL), "
+            "('Gsis Only Guy', 'TE', 'X', NULL, NULL, 'GSI123')"
+        )
+        cur.execute(
+            "INSERT INTO team_def_map (yahoo_def_id, team_abbr, team_name) "
+            "VALUES ('999021', 'PHI', 'Eagles') "
+            "ON CONFLICT (yahoo_def_id) DO NOTHING"
+        )
+    db.commit()
+    import ingest_captures
+
+    resolve = ingest_captures.make_resolver(db)
+    assert resolve("James Cook III", "RB", "Buf") == "34019"  # suffix strip -> yahoo
+    assert resolve("Evan McPherson", "K", "Cin") == "33537"  # K -> PK
+    assert resolve("Eagles", "DEF", "Phi") == "999021"  # team_def_map
+    assert resolve("Luther Burden III", "WR", "Chi") == "12519"  # suffix -> sleeper fallback
+    assert resolve("DJ Moore", "WR", "Buf") == "30994"  # punctuation normalization
+    assert resolve("Kenneth Walker", "RB", "KC") == "33996"  # reverse suffix via normalization
+    assert resolve("Gsis Only Guy", "TE", "X") == "GSI123"  # gsis fallback
+    assert resolve("Nobody Real", "WR", "Mia") is None  # loud miss, not a guess

@@ -2,8 +2,8 @@
 import datetime
 
 from ffi.league_profile import NAJEE
-from ffi.league_state import RosterRow
-from ffi.trade_angles import buy_low_sell_high, opponent_needs, qb_repair
+from ffi.league_state import RosterRow, adapter
+from ffi.trade_angles import angles, buy_low_sell_high, opponent_needs, qb_repair
 from ffi.usage import ASCENDING, FALLING, TrendSignal
 from ffi.usage.market import MarketState
 
@@ -61,3 +61,17 @@ def test_buy_low_sell_high_skips_failed_market_gate():
     sig = TrendSignal("G1", ASCENDING, "snap_rise_2wk", "evidence", False)
     market = {"G1": MarketState(add_count=0, drop_count=5, gate_failed=True)}
     assert buy_low_sell_high([sig], market) == []
+
+
+def test_angles_reads_the_freshest_roster_snapshot(db):
+    """angles() must read the LATEST captured snapshot (captures land
+    mid-week), not the week-start date — and flag the 1-QB team."""
+    rows = [
+        RosterRow(326814, 2026, datetime.date(2026, 9, 14), 1, "Q1", "starter", "QB", "manual", "date"),
+        RosterRow(326814, 2026, datetime.date(2026, 9, 14), 2, "Q2", "starter", "QB", "manual", "date"),
+        RosterRow(326814, 2026, datetime.date(2026, 9, 14), 2, "Q3", "bench", "QB", "manual", "date"),
+    ]
+    adapter.record(rows, "manual", "date", conn=db)
+    out = angles(1, limit=50, conn=db)
+    qb_teams = {a.target_team_id for a in out if a.kind == "qb_repair"}
+    assert qb_teams == {1}  # team 1 has one QB; team 2 has two

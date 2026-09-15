@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 
 from dataclasses import dataclass
 
+from ffi import db
 from ffi.league_profile import LeagueProfile, get_profile
 from ffi.league_state import adapter
 from ffi.league_state.clock import load as load_clock
@@ -24,7 +25,10 @@ from ffi.usage.market import MarketState
 # A "hot" market for a sell-high angle: net adds at/above this many.
 NET_HOT = 5
 
-POSITIONS = ("QB", "RB", "WR", "TE", "K", "DEF")
+# The positions worth a TRADE angle. K/DEF are streaming spots — nobody
+# trades for kicker depth, and flagging every team that carries exactly one
+# kicker (i.e., all of them) is noise, not signal.
+TRADE_POSITIONS = ("QB", "RB", "WR", "TE")
 
 
 @dataclass(frozen=True)
@@ -48,7 +52,7 @@ def opponent_needs(rosters, profile: LeagueProfile) -> list[Angle]:
     by_team = _roster_counts(rosters)
     out: list[Angle] = []
     for team in sorted(by_team):
-        for pos in POSITIONS:
+        for pos in TRADE_POSITIONS:
             need = profile.starters.get(pos, 0) + 1  # +1 bench depth
             have = by_team[team].get(pos, 0)
             if have < need:
@@ -145,13 +149,34 @@ def angles(
 ) -> list[Angle]:
     """Roster-derived trade angles for a week (opponent needs + QB repair).
 
+    Reads the FRESHEST captured roster snapshot for the league — captures
+    land mid-week (the operator pastes rosters when convenient), so pinning
+    the read to the week-start date would miss them. `week` still drives
+    the season derivation, keeping the contract signature intact.
+
     The market-vs-usage angles (`buy_low_sell_high`) need the usage + market
     pipeline and are exposed separately for the reports layer to combine; the
     roster angles here are computed straight from the canonical roster table.
     """
     profile = profile or get_profile("najee")
-    as_of = load_clock().week_start(week).date()
-    rosters = adapter.load_rosters(as_of, conn=conn, league_id=profile.league_id)
+    own = conn is None
+    if own:
+        conn = db.connect()
+    try:
+        season = load_clock().week_start(week).year
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT max(as_of) FROM public.league_rosters "
+                "WHERE league_id=%s AND season=%s",
+                (profile.league_id, season),
+            )
+            as_of = cur.fetchone()[0]
+        if as_of is None:
+            return []  # no roster capture yet — no angles, honestly empty
+        rosters = adapter.load_rosters(as_of, conn=conn, league_id=profile.league_id)
+    finally:
+        if own:
+            conn.close()
     out = opponent_needs(rosters, profile) + qb_repair(rosters, profile)
     out.sort(key=lambda a: (a.kind, a.target_team_id or 0, a.position or ""))
     return out[: max(0, limit)]
