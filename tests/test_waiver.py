@@ -95,34 +95,40 @@ def test_priority_rejects_zero_priority():
 
 
 # --- clear_time ------------------------------------------------------------
-def test_clear_time_refuses_unset_award():
-    drop = datetime.datetime(2026, 9, 9, 12, 0, tzinfo=LEAGUE_TZ)
-    ev = clear_time.next_clear(drop, _clock())
-    assert ev.award == "refused"
-    assert ev.reason is not None
-
-
-def test_clear_time_derives_clear_day_from_safe_fields():
-    # Dropped Monday of week 1 (Sep 14): 1-day waiver -> eligible Sep 15,
-    # which IS a Tuesday -> clears Sep 15.
+def test_clear_time_is_drop_plus_one_day_same_clock_time():
+    # Observed model: unclaimed drops clear to FA at drop+1day, same local
+    # clock time, FCFS (fitted from the 2025 transaction log).
     drop = datetime.datetime(2026, 9, 14, 12, 0, tzinfo=LEAGUE_TZ)
-    ev = clear_time.next_clear(drop, _clock(), award_mechanism="rolling_priority")
-    assert ev.clears_at.date() == datetime.date(2026, 9, 15)
-    assert ev.award == "rolling_priority"
+    ev = clear_time.next_clear(drop, _clock())
+    assert ev.clears_at == datetime.datetime(2026, 9, 15, 12, 0, tzinfo=LEAGUE_TZ)
+    assert ev.award == "fcfs"
 
 
 def test_clear_time_is_dst_safe():
-    # Drop on the Nov 1 DST boundary (Sunday). The 1-day waiver -> eligible
-    # Monday Nov 2; next Tuesday -> Nov 3.
+    # Drop Sunday Nov 1 20:00 PDT; DST ends that night. Calendar model: the
+    # clear is Mon Nov 2 20:00 PST — same wall-clock time, one hour more
+    # absolute elapsed. The watcher polls from an hour early to cover both
+    # readings on transition weekends.
     drop = datetime.datetime(2026, 11, 1, 20, 0, tzinfo=LEAGUE_TZ)
-    ev = clear_time.next_clear(drop, _clock(), award_mechanism="fcfs")
-    assert ev.clears_at.date() == datetime.date(2026, 11, 3)
+    ev = clear_time.next_clear(drop, _clock())
+    assert ev.clears_at.replace(tzinfo=None) == datetime.datetime(2026, 11, 2, 20, 0)
     assert ev.clears_at.tzinfo is not None
 
 
 def test_clear_time_rejects_naive_drop():
     with pytest.raises(ValueError, match="tz-aware"):
         clear_time.next_clear(datetime.datetime(2026, 9, 14, 12, 0), _clock())
+
+
+def test_clear_time_fails_loud_on_config_model_drift():
+    import dataclasses
+
+    bogus_award = dataclasses.replace(_clock(), clear_award_mechanism="bogus")
+    with pytest.raises(ValueError, match="award"):
+        clear_time.next_clear(datetime.datetime(2026, 9, 14, 12, 0, tzinfo=LEAGUE_TZ), bogus_award)
+    bogus_behavior = dataclasses.replace(_clock(), weekend_drop_clear_behavior="batch_gated")
+    with pytest.raises(ValueError, match="clear_at_24h"):
+        clear_time.next_clear(datetime.datetime(2026, 9, 14, 12, 0, tzinfo=LEAGUE_TZ), bogus_behavior)
 
 
 # --- ledger ----------------------------------------------------------------

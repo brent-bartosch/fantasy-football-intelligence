@@ -1,56 +1,47 @@
-"""Drop -> clear state machine over the weekly calendar (ADR R4, R29).
+"""Drop -> clear state machine over the OBSERVED weekly mechanics (R4, R29).
 
-A dropped player enters waivers for `waiver_period_days` and clears at the next
-waiver-processing day on or after that. The clear TIME is derivable from safe
-league-clock fields; the clear AWARD (FCFS vs rolling priority) is a P3 observed
-mechanism that is still UNSET, so `next_clear` fails closed — it refuses to
-name an award rather than guessing one.
+FITTED MODEL (2026-09-14, from the 2025 transaction log — see
+config/league_clock.yaml): a dropped player sits on waivers for
+`waiver_period_days`; if unclaimed, they clear to FREE AGENCY at the same
+local clock time `waiver_period_days` later — NOT batch-gated, FCFS. A
+claim filed during the window resolves at the weekly batch instead (that is
+window 1, not this module). Nobody in the league currently snipes the clear
+moment (fastest observed re-add: 39.3h after the drop), so the watcher
+built on this model races an unguarded window.
 
-Tz-aware and DST-safe: all arithmetic is done on calendar dates in the league
-timezone, then re-attached to that timezone, so a drop on the Nov 1 DST
-boundary still resolves to the correct local wall-clock day.
+DST note (R29): the clear is computed on the calendar — same wall-clock
+time next day. On transition weekends the absolute-24h reading differs by
+one hour; a watcher should poll from an hour before the computed moment.
 """
 from __future__ import annotations
 
 import datetime
 
-from ffi.league_state.clock import LeagueClock, WEEKDAYS
+from ffi.league_state.clock import LeagueClock
 from ffi.waiver import ClearEvent
 
-VALID_AWARDS = ("rolling_priority", "fcfs")
+_VALID_AWARDS = ("fcfs", "rolling_priority")
+_IMPLEMENTED_BEHAVIOR = "clear_at_24h"
 
 
-def _next_day_on_or_after(day: datetime.date, weekday_name: str) -> datetime.date:
-    target = WEEKDAYS[weekday_name]
-    offset = (target - day.weekday()) % 7
-    return day + datetime.timedelta(days=offset)
-
-
-def next_clear(
-    drop_ts: datetime.datetime,
-    clock: LeagueClock,
-    award_mechanism: str | None = None,
-) -> ClearEvent:
-    """The clear event for a player dropped at `drop_ts`.
-
-    `award_mechanism` is the (P3-observed) post-clear award. When it is None or
-    not a known mechanism, the event refuses to name an award — but the clear
-    TIME is still returned, because it is derivable from safe fields.
-    """
+def next_clear(drop_ts: datetime.datetime, clock: LeagueClock) -> ClearEvent:
+    """The moment a dropped player becomes a grabbable free agent."""
     if drop_ts.tzinfo is None:
         raise ValueError("drop_ts must be tz-aware (ADR §7 timezones)")
-    eligible = drop_ts.date() + datetime.timedelta(days=clock.waiver_period_days)
-    clear_day = _next_day_on_or_after(eligible, clock.waivers_process_day)
-    clears_at = datetime.datetime(
-        clear_day.year, clear_day.month, clear_day.day, tzinfo=clock.timezone
-    )
-    if award_mechanism not in VALID_AWARDS:
-        return ClearEvent(
-            clears_at=clears_at,
-            award="refused",
-            reason=(
-                "clear award mechanism is unset (P3) — refusing to name an award; "
-                f"clear time is {clears_at:%Y-%m-%d} (derived from verified fields)"
-            ),
+    if clock.weekend_drop_clear_behavior != _IMPLEMENTED_BEHAVIOR:
+        raise ValueError(
+            f"clear_time implements only {_IMPLEMENTED_BEHAVIOR!r}; "
+            f"league_clock.yaml declares {clock.weekend_drop_clear_behavior!r} "
+            "— update the config or the model, never guess (fail-loud)"
         )
-    return ClearEvent(clears_at=clears_at, award=award_mechanism)
+    if clock.clear_award_mechanism not in _VALID_AWARDS:
+        raise ValueError(
+            f"unknown clear award mechanism {clock.clear_award_mechanism!r} "
+            f"(expected one of {_VALID_AWARDS})"
+        )
+    local = drop_ts.astimezone(clock.timezone)
+    clear_day = local.date() + datetime.timedelta(days=clock.waiver_period_days)
+    clears_at = datetime.datetime.combine(
+        clear_day, local.time(), tzinfo=clock.timezone
+    )
+    return ClearEvent(clears_at=clears_at, award=clock.clear_award_mechanism)

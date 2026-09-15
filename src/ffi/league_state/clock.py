@@ -52,6 +52,8 @@ class LeagueClock:
     waivers_process_day: str  # lowercase weekday name
     waiver_period_days: int
     waiver_processing_hour: int  # observed batch hour, local (fitted from the tx log)
+    clear_award_mechanism: str  # observed: 'fcfs' (fitted from the tx log)
+    weekend_drop_clear_behavior: str  # observed: 'clear_at_24h'
     weekly_acquisition_limit: int
     season_acquisition_limit: int
     ir_direct_add: bool
@@ -98,6 +100,8 @@ def load(path: pathlib.Path | None = None) -> LeagueClock:
         waivers_process_day=day,
         waiver_period_days=int(_need("waiver_period_days")),
         waiver_processing_hour=int(_need("waiver_processing_hour")),
+        clear_award_mechanism=str(_need("clear_award_mechanism")),
+        weekend_drop_clear_behavior=str(_need("weekend_drop_clear_behavior")),
         weekly_acquisition_limit=int(_need("weekly_acquisition_limit")),
         season_acquisition_limit=int(_need("season_acquisition_limit")),
         ir_direct_add=bool(_need("ir_direct_add")),

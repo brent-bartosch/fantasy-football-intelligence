@@ -182,5 +182,15 @@ Concretely:
 01:00 in 2025, 45 in 2024, batch completing by ~02:00 (the 06:00–07:00
 Wednesday clusters are post-waiver FA grabs, not the batch). Wired into
 `league_state/clock.py`: `deadline("waivers")` is now Wednesday 01:00 PT.
-Still UNSET: `clear_award_mechanism`, `weekend_drop_clear_behavior`,
-`move_count_reset_boundary` (plus the unverified trade/playoff fields).
+
+Also fitted 2026-09-14 (same log, 385 drops / 402 adds): **window 2 is
+real** — a drop clears to FREE AGENCY at drop+1day (same local clock
+time), NOT batch-gated, FCFS. Proof: 146 of 196 dropped-then-re-added
+players came back with `source_type: 'freeagents'` at arbitrary hours,
+including FA adds before the next weekly batch. Nobody in the league
+snipes the clear moment (fastest re-add: 39.3h; median 310h).
+`clear_award_mechanism: fcfs` and `weekend_drop_clear_behavior:
+clear_at_24h` are wired into `waiver/clear_time.py`.
+
+Still UNSET: `move_count_reset_boundary` (plus the unverified trade/playoff
+fields).
